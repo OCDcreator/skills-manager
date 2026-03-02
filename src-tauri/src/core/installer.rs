@@ -79,16 +79,9 @@ impl PreparedSource {
 }
 
 pub fn install_from_local(source: &Path, name: Option<&str>) -> Result<InstallResult> {
-    let prepared = PreparedSource::open(source)?;
-    let skill_dir = prepared.skill_dir();
-
-    let skill_name = match name {
-        Some(n) if !n.is_empty() => n.to_string(),
-        _ => skill_metadata::infer_skill_name(skill_dir),
-    };
-
+    let skill_name = resolve_local_skill_name(source, name)?;
     let dest = central_repo::skills_dir().join(&skill_name);
-    install_skill_dir_to_destination(skill_dir, &skill_name, &dest)
+    install_from_local_to_destination(source, Some(&skill_name), &dest)
 }
 
 pub fn install_from_local_to_destination(
@@ -104,6 +97,16 @@ pub fn install_from_local_to_destination(
         _ => skill_metadata::infer_skill_name(skill_dir),
     };
     install_skill_dir_to_destination(skill_dir, &skill_name, destination)
+}
+
+pub fn resolve_local_skill_name(source: &Path, name: Option<&str>) -> Result<String> {
+    let prepared = PreparedSource::open(source)?;
+    let skill_dir = prepared.skill_dir();
+
+    Ok(match name {
+        Some(n) if !n.is_empty() => n.to_string(),
+        _ => skill_metadata::infer_skill_name(skill_dir),
+    })
 }
 
 pub fn install_from_git_dir(source: &Path, name: Option<&str>) -> Result<InstallResult> {

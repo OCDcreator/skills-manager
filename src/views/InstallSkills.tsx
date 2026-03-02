@@ -225,7 +225,6 @@ export function InstallSkills() {
 
   const scanGroups = scanResult?.groups ?? [];
   const pendingGroups = scanGroups.filter((group) => !group.imported);
-  const importedGroups = scanGroups.length - pendingGroups.length;
   const sourceOptions = useMemo(
     () => Array.from(new Set(marketSkills.map((skill) => skill.source))).slice(0, 8),
     [marketSkills]
@@ -618,27 +617,6 @@ export function InstallSkills() {
             </div>
 
             <div className="space-y-4 p-4">
-              <div className="grid gap-2 md:grid-cols-3">
-                <div className="rounded-lg border border-border-subtle bg-bg-secondary px-3.5 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
-                    {t("install.scan.stats.detected")}
-                  </p>
-                  <p className="mt-1 text-[20px] font-semibold text-primary">{scanGroups.length}</p>
-                </div>
-                <div className="rounded-lg border border-border-subtle bg-bg-secondary px-3.5 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
-                    {t("install.scan.stats.pending")}
-                  </p>
-                  <p className="mt-1 text-[20px] font-semibold text-primary">{pendingGroups.length}</p>
-                </div>
-                <div className="rounded-lg border border-border-subtle bg-bg-secondary px-3.5 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
-                    {t("install.scan.stats.imported")}
-                  </p>
-                  <p className="mt-1 text-[20px] font-semibold text-primary">{importedGroups}</p>
-                </div>
-              </div>
-
               {scanLoading ? (
                 <div className="flex items-center justify-center gap-2.5 py-12 text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -656,13 +634,6 @@ export function InstallSkills() {
                 </div>
               ) : (
                 <>
-                  <div className="rounded-xl border border-border-subtle bg-bg-secondary/70 px-3.5 py-2.5">
-                    <p className="text-[11px] text-muted">
-                      {pendingGroups.length > 0
-                        ? t("install.scan.listHint")
-                        : t("install.scan.listImportedHint")}
-                    </p>
-                  </div>
                   <div className="overflow-hidden rounded-lg border border-border-subtle bg-bg-secondary">
                     {scanGroups.map((group) => {
                       const [primaryLocation, ...otherLocations] = group.locations;
@@ -671,23 +642,37 @@ export function InstallSkills() {
 
                       return (
                         <article key={group.name} className="border-b border-border-subtle last:border-b-0">
-                          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1.5 px-3 py-2 lg:grid-cols-[180px_minmax(0,1fr)_auto] lg:items-center">
-                            <div className="flex min-w-0 items-center gap-2">
+                          <div className="flex items-start justify-between gap-3 px-3 py-2">
+                            <div className="min-w-0 flex-1 space-y-1.5">
+                              <div className="flex min-w-0 items-center gap-2">
                               <h3 className="truncate text-[13px] font-semibold text-secondary">
                                 {group.name}
                               </h3>
-                              <span className="shrink-0 rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[10px] text-muted">
-                                {t("install.scan.locations", { count: group.locations.length })}
-                              </span>
-                            </div>
-
-                            <div className="row-span-2 flex shrink-0 items-start justify-end lg:row-span-1 lg:items-center">
                               {group.imported ? (
-                                <span className="inline-flex items-center gap-1 rounded-[6px] border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-400">
+                                <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
                                   <Check className="h-3 w-3" />
                                   {t("install.scan.imported")}
                                 </span>
-                              ) : (
+                              ) : null}
+                              <span className="shrink-0 rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[10px] text-muted">
+                                {t("install.scan.locations", { count: group.locations.length })}
+                              </span>
+                              </div>
+
+                              {primaryLocation ? (
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className="inline-flex shrink-0 rounded-[4px] border border-border-subtle bg-surface px-1.5 py-px text-[10px] font-medium text-tertiary">
+                                    {primaryLocation.tool}
+                                  </span>
+                                  <code className="block min-w-0 truncate text-[11px] text-tertiary">
+                                    {primaryLocation.found_path}
+                                  </code>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="flex shrink-0 items-start justify-end">
+                              {group.imported ? null : (
                                 <button
                                   onClick={() => primaryPath && handleImportDiscovered(primaryPath, group.name)}
                                   disabled={!primaryPath || isImporting}
@@ -702,17 +687,6 @@ export function InstallSkills() {
                                 </button>
                               )}
                             </div>
-
-                            {primaryLocation ? (
-                              <div className="col-span-2 flex min-w-0 items-center gap-2 lg:col-span-1">
-                                <span className="inline-flex shrink-0 rounded-[4px] border border-border-subtle bg-surface px-1.5 py-px text-[10px] font-medium text-tertiary">
-                                  {primaryLocation.tool}
-                                </span>
-                                <code className="block min-w-0 truncate text-[11px] text-tertiary">
-                                  {primaryLocation.found_path}
-                                </code>
-                              </div>
-                            ) : null}
                           </div>
 
                           {otherLocations.length > 0 ? (

@@ -241,6 +241,18 @@ impl SkillStore {
         Ok(rows.next().and_then(|r| r.ok()))
     }
 
+    pub fn get_skill_by_central_path(&self, central_path: &str) -> Result<Option<SkillRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, source_type, source_ref, source_ref_resolved, source_subpath,
+                    source_branch, source_revision, remote_revision, central_path, content_hash, enabled,
+                    created_at, updated_at, status, update_status, last_checked_at, last_check_error
+             FROM skills WHERE central_path = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![central_path], map_skill_row)?;
+        Ok(rows.next().and_then(|r| r.ok()))
+    }
+
     pub fn update_skill_source_metadata(
         &self,
         id: &str,
