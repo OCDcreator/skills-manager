@@ -223,47 +223,26 @@ export function MySkills() {
       ? t("mySkills.updateActions.reimport")
       : t("mySkills.updateActions.update");
 
-  const statusBadge = (skill: ManagedSkill, enabledInScenario: boolean, isSynced: boolean) => {
+  const statusBadge = (skill: ManagedSkill) => {
     if (skill.update_status === "update_available") {
       return {
         label: "Update",
-        className: "bg-amber-500/12 text-amber-400",
+        className: "bg-amber-500/12 text-amber-600 dark:text-amber-400",
       };
     }
     if (skill.update_status === "source_missing") {
       return {
         label: t("mySkills.updateStatus.sourceMissing"),
-        className: "bg-red-500/10 text-red-300",
+        className: "bg-red-500/10 text-red-600 dark:text-red-300",
       };
     }
     if (skill.update_status === "error") {
       return {
         label: t("mySkills.updateStatus.error"),
-        className: "bg-red-500/10 text-red-300",
+        className: "bg-red-500/10 text-red-600 dark:text-red-300",
       };
     }
-    if (enabledInScenario) {
-      return {
-        label: activeScenarioName,
-        className: "bg-amber-500/10 text-amber-400/90",
-      };
-    }
-    if (isSynced) {
-      return {
-        label: t("mySkills.synced"),
-        className: "bg-emerald-500/10 text-emerald-400",
-      };
-    }
-    if (skill.update_status === "local_only") {
-      return {
-        label: t("mySkills.updateStatus.localOnly"),
-        className: "bg-background text-faint",
-      };
-    }
-    return {
-      label: t("mySkills.standby"),
-      className: "bg-background text-faint",
-    };
+    return null;
   };
 
   return (
@@ -363,13 +342,16 @@ export function MySkills() {
             const enabledInScenario = activeScenario
               ? skill.scenario_ids.includes(activeScenario.id)
               : false;
-            const badge = statusBadge(skill, enabledInScenario, isSynced);
+            const badge = statusBadge(skill);
 
             if (viewMode === "grid") {
               return (
                 <div
                   key={skill.id}
-                  className="app-panel group relative flex flex-col overflow-hidden transition-all hover:border-border hover:bg-surface-hover"
+                  className={cn(
+                    "app-panel group relative flex flex-col overflow-hidden transition-all hover:border-border hover:bg-surface-hover",
+                    enabledInScenario && "border-l-2 border-l-accent"
+                  )}
                 >
                   <div className="absolute right-3 top-3 flex items-center gap-1 opacity-0 transition-all group-hover:opacity-100">
                     <button
@@ -418,16 +400,18 @@ export function MySkills() {
                     <p className="text-[12px] leading-[18px] text-muted truncate">
                       {skill.description || "—"}
                     </p>
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                          badge.className
-                        )}
-                      >
-                        {badge.label}
-                      </span>
-                    </div>
+                    {badge && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={cn(
+                            "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                            badge.className
+                          )}
+                        >
+                          {badge.label}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-auto flex items-center justify-between gap-2 border-t border-border-subtle px-3.5 py-2.5">
@@ -436,15 +420,14 @@ export function MySkills() {
                         {sourceIcon(skill.source_type)}
                         {sourceTypeLabel(skill)}
                       </span>
-                      <span className="text-faint">·</span>
-                      <span
-                        className={cn(
-                          "truncate text-[11px] font-medium",
-                          enabledInScenario ? "text-amber-400/80" : "text-faint"
-                        )}
-                      >
-                        {enabledInScenario ? activeScenarioName : t("mySkills.notInScenario")}
-                      </span>
+                      {enabledInScenario && (
+                        <>
+                          <span className="text-faint">·</span>
+                          <span className="truncate text-[11px] font-medium text-amber-600 dark:text-amber-400/80">
+                            {activeScenarioName}
+                          </span>
+                        </>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
@@ -453,7 +436,7 @@ export function MySkills() {
                         className={cn(
                           "rounded px-2 py-1 text-[12px] font-medium transition-colors outline-none",
                           enabledInScenario
-                            ? "text-emerald-400 hover:bg-emerald-500/10"
+                            ? "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
                             : "text-muted hover:bg-surface-hover hover:text-secondary"
                         )}
                       >
@@ -468,7 +451,10 @@ export function MySkills() {
             return (
               <div
                 key={skill.id}
-                className="app-panel group flex items-center gap-3.5 rounded-xl border-transparent px-3.5 py-3 transition-all hover:border-border hover:bg-surface-hover"
+                className={cn(
+                  "app-panel group flex items-center gap-3.5 rounded-xl border-transparent px-3.5 py-3 transition-all hover:border-border hover:bg-surface-hover",
+                  enabledInScenario && "border-l-2 border-l-accent"
+                )}
               >
                 {isSynced ? (
                   <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
@@ -493,14 +479,11 @@ export function MySkills() {
                     {sourceIcon(skill.source_type)}
                     {sourceTypeLabel(skill)}
                   </span>
-                  <span
-                    className={cn(
-                      "text-[11px] font-medium",
-                      enabledInScenario ? "text-amber-400/80" : "text-faint"
-                    )}
-                  >
-                    {enabledInScenario ? activeScenarioName : t("mySkills.notInScenario")}
-                  </span>
+                  {enabledInScenario && (
+                    <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400/80">
+                      {activeScenarioName}
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -510,7 +493,7 @@ export function MySkills() {
                     className={cn(
                       "rounded px-2 py-0.5 text-[11px] font-medium transition-colors outline-none",
                       enabledInScenario
-                        ? "text-emerald-400 hover:bg-emerald-500/10"
+                        ? "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
                         : "text-muted hover:bg-surface-hover hover:text-secondary"
                     )}
                   >

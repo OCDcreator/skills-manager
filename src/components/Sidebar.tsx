@@ -207,7 +207,7 @@ export function Sidebar() {
 
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-2.5 py-[7px] mt-0.5 rounded-[5px] text-[13px] text-faint hover:text-tertiary hover:bg-surface-hover transition-colors w-full outline-none"
+            className="flex items-center gap-2 px-2.5 py-[7px] mt-0.5 rounded-[5px] text-[13px] text-muted hover:text-secondary hover:bg-surface-hover transition-colors w-full outline-none"
           >
             <Plus className="w-3.5 h-3.5" />
             {t("sidebar.newScenario")}
