@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-03-09
+
+### Added
+- Sort market search results by download count
+
+### Fixed
+- Debounce market search input to reduce lag and prevent stale results
+- Improve light/dark mode color contrast and simplify skill status badges
+- Improve text readability across light and dark themes
+- Increase font sizes for readability and add CJK font stack
+- Increase font sizes and window dimensions for better readability
+
 ## [1.1.0] - 2026-03-08
 
 ### Added
