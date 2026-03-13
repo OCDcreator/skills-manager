@@ -176,6 +176,14 @@
     "loadMoreSearch": "Load more results",
     "loadingMore": "Loading more...",
     "installing": "Installing...",
+    "installed": "Installed",
+    "toast": {
+      "cloning": "Cloning repository...",
+      "installing": "Installing {{name}}...",
+      "syncing": "Syncing to tools...",
+      "success": "{{name}} installed successfully",
+      "done": "Done"
+    },
     "local": {
       "title": "Import a local skill source",
       "description": "Choose a folder that contains `SKILL.md`, or import a `.zip` or `.skill` package.",

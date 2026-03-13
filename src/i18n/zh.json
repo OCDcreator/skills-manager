@@ -176,6 +176,14 @@
     "loadMoreSearch": "加载更多结果",
     "loadingMore": "正在加载更多...",
     "installing": "安装中...",
+    "installed": "已安装",
+    "toast": {
+      "cloning": "正在克隆仓库...",
+      "installing": "正在安装 {{name}}...",
+      "syncing": "正在同步到工具...",
+      "success": "{{name}} 安装成功",
+      "done": "完成"
+    },
     "local": {
       "title": "导入本地 Skill 源",
       "description": "选择包含 `SKILL.md` 的文件夹，或导入 `.zip` / `.skill` 文件。",

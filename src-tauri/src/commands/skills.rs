@@ -208,11 +208,22 @@ pub fn install_git(
     repo_url: String,
     name: Option<String>,
     store: State<'_, Arc<SkillStore>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    use tauri::Emitter;
+    let emit_progress = |phase: &str| {
+        app_handle.emit("install-progress", serde_json::json!({
+            "skill_id": repo_url,
+            "phase": phase,
+        })).ok();
+    };
+
+    emit_progress("cloning");
     let parsed = git_fetcher::parse_git_source(&repo_url);
     let temp_dir =
         git_fetcher::clone_repo_ref(&parsed.clone_url, parsed.branch.as_deref()).map_err(|e| e.to_string())?;
 
+    emit_progress("installing");
     let install_result = (|| -> Result<(installer::InstallResult, InstallSourceMetadata), String> {
         let skill_dir = resolve_skill_dir(&temp_dir, parsed.subpath.as_deref(), None)?;
         let revision = git_fetcher::get_head_revision(&temp_dir).map_err(|e| e.to_string())?;
@@ -237,6 +248,7 @@ pub fn install_git(
     let active = store.get_active_scenario_id().ok().flatten();
     store_installed_skill(&store, &result, &metadata, active.as_deref())?;
 
+    emit_progress("done");
     Ok(())
 }
 
@@ -245,10 +257,22 @@ pub fn install_from_skillssh(
     source: String,
     skill_id: String,
     store: State<'_, Arc<SkillStore>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    use tauri::Emitter;
+    let skill_key = format!("{}/{}", source, skill_id);
+    let emit_progress = |phase: &str| {
+        app_handle.emit("install-progress", serde_json::json!({
+            "skill_id": skill_key,
+            "phase": phase,
+        })).ok();
+    };
+
+    emit_progress("cloning");
     let repo_url = format!("https://github.com/{}.git", source);
     let temp_dir = git_fetcher::clone_repo_ref(&repo_url, None).map_err(|e| e.to_string())?;
 
+    emit_progress("installing");
     let install_result = (|| -> Result<(installer::InstallResult, InstallSourceMetadata), String> {
         let skill_dir = resolve_skill_dir(&temp_dir, None, Some(&skill_id))?;
         let revision = git_fetcher::get_head_revision(&temp_dir).map_err(|e| e.to_string())?;
@@ -273,6 +297,7 @@ pub fn install_from_skillssh(
     let active = store.get_active_scenario_id().ok().flatten();
     store_installed_skill(&store, &result, &metadata, active.as_deref())?;
 
+    emit_progress("done");
     Ok(())
 }
 

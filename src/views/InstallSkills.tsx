@@ -34,7 +34,7 @@ const MARKET_SEARCH_STEP = 60;
 
 export function InstallSkills() {
   const { t } = useTranslation();
-  const { refreshScenarios, refreshManagedSkills } = useApp();
+  const { refreshScenarios, refreshManagedSkills, managedSkills } = useApp();
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<"market" | "local" | "git">("market");
   const [marketTab, setMarketTab] = useState<"hot" | "trending" | "alltime">("hot");
@@ -58,6 +58,16 @@ export function InstallSkills() {
   const [importingAll, setImportingAll] = useState(false);
   const marketListRef = useRef<HTMLDivElement | null>(null);
   const [debouncedMarketQuery, setDebouncedMarketQuery] = useState("");
+
+  const installedSourceRefs = useMemo(() => {
+    const set = new Set<string>();
+    for (const skill of managedSkills) {
+      if (skill.source_type === "skillssh" && skill.source_ref) {
+        set.add(skill.source_ref);
+      }
+    }
+    return set;
+  }, [managedSkills]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -141,11 +151,24 @@ export function InstallSkills() {
     }
   }, [activeTab, scanLoading, scanResult, runScan]);
 
-  const installLocalSource = async (sourcePath: string) => {
-    await api.installLocal(sourcePath);
-    toast.success(t("common.success"));
-    await Promise.all([refreshScenarios(), refreshManagedSkills()]);
-    await runScan();
+  const installLocalSource = (sourcePath: string) => {
+    const name = sourcePath.split("/").pop() || sourcePath;
+    toast.promise(
+      (async () => {
+        await api.installLocal(sourcePath);
+        await Promise.all([refreshScenarios(), refreshManagedSkills()]);
+        await runScan();
+      })(),
+      {
+        loading: t("install.toast.installing", { name }),
+        success: t("install.toast.success", { name }),
+        error: (e) => {
+          const message = e?.toString?.() || t("common.error");
+          setLocalError(message);
+          return message;
+        },
+      }
+    );
   };
 
   const handleLocalFolderInstall = async () => {
@@ -155,7 +178,7 @@ export function InstallSkills() {
         multiple: false,
       });
       if (!selected) return;
-      await installLocalSource(selected as string);
+      installLocalSource(selected as string);
     } catch (e: any) {
       const message = e?.toString?.() || t("common.error");
       setLocalError(message);
@@ -170,7 +193,7 @@ export function InstallSkills() {
         filters: [{ name: "Skills", extensions: ["zip", "skill"] }],
       });
       if (!selected) return;
-      await installLocalSource(selected as string);
+      installLocalSource(selected as string);
     } catch (e: any) {
       const message = e?.toString?.() || t("common.error");
       setLocalError(message);
@@ -179,32 +202,41 @@ export function InstallSkills() {
   };
 
   const handleInstallSkillssh = async (skill: SkillsShSkill) => {
+    const displayName = skill.name || skill.skill_id;
     setInstalling(skill.id);
-    try {
-      await api.installFromSkillssh(skill.source, skill.skill_id);
-      toast.success(`${skill.name} ${t("common.success")}`);
-      await Promise.all([refreshScenarios(), refreshManagedSkills()]);
-    } catch (e: any) {
-      toast.error(e.toString());
-    } finally {
-      setInstalling(null);
-    }
+    toast.promise(
+      (async () => {
+        await api.installFromSkillssh(skill.source, skill.skill_id);
+        await Promise.all([refreshScenarios(), refreshManagedSkills()]);
+      })(),
+      {
+        loading: t("install.toast.installing", { name: displayName }),
+        success: t("install.toast.success", { name: displayName }),
+        error: (e) => e?.toString() || t("common.error"),
+        finally: () => setInstalling(null),
+      }
+    );
   };
 
   const handleGitInstall = async () => {
     if (!gitUrl.trim()) return;
     setGitLoading(true);
-    try {
-      await api.installGit(gitUrl.trim(), gitName.trim() || undefined);
-      toast.success(t("common.success"));
-      setGitUrl("");
-      setGitName("");
-      await Promise.all([refreshScenarios(), refreshManagedSkills()]);
-    } catch (e: any) {
-      toast.error(e.toString());
-    } finally {
-      setGitLoading(false);
-    }
+    const url = gitUrl.trim();
+    const name = gitName.trim() || undefined;
+    toast.promise(
+      (async () => {
+        await api.installGit(url, name);
+        setGitUrl("");
+        setGitName("");
+        await Promise.all([refreshScenarios(), refreshManagedSkills()]);
+      })(),
+      {
+        loading: t("install.toast.cloning"),
+        success: t("install.toast.success", { name: name || url }),
+        error: (e) => e?.toString() || t("common.error"),
+        finally: () => setGitLoading(false),
+      }
+    );
   };
 
   const handleImportDiscovered = async (sourcePath: string, name: string) => {
@@ -458,6 +490,10 @@ export function InstallSkills() {
                     {paginatedMarketSkills.map((skill) => {
                       const displayName = skill.name || skill.skill_id;
                       const showSkillId = skill.skill_id.trim() !== displayName.trim();
+                      const owner = skill.source.split("/")[0];
+                      const avatarUrl = `https://github.com/${owner}.png?size=32`;
+                      const sourceRef = `${skill.source}/${skill.skill_id}`;
+                      const isInstalled = installedSourceRefs.has(sourceRef);
 
                       return (
                       <div
@@ -465,13 +501,21 @@ export function InstallSkills() {
                         className="app-panel flex flex-col gap-2 p-3 transition-colors hover:border-border"
                       >
                         <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <h3 className="truncate text-[13px] font-semibold text-secondary">
-                              {displayName}
-                            </h3>
-                            {showSkillId ? (
-                              <p className="truncate text-[13px] leading-4 text-muted">{skill.skill_id}</p>
-                            ) : null}
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
+                            <img
+                              src={avatarUrl}
+                              alt={owner}
+                              className="h-6 w-6 shrink-0 rounded-full border border-border-subtle"
+                              loading="lazy"
+                            />
+                            <div className="min-w-0">
+                              <h3 className="truncate text-[13px] font-semibold text-secondary">
+                                {displayName}
+                              </h3>
+                              {showSkillId ? (
+                                <p className="truncate text-[13px] leading-4 text-muted">{skill.skill_id}</p>
+                              ) : null}
+                            </div>
                           </div>
 
                           <div className="flex shrink-0 items-center gap-1">
@@ -482,18 +526,27 @@ export function InstallSkills() {
                             >
                               <ExternalLink className="h-3.5 w-3.5" />
                             </button>
-                            <button
-                              onClick={() => handleInstallSkillssh(skill)}
-                              disabled={installing === skill.id}
-                              className="rounded-[5px] border border-accent-border bg-accent-dark p-1 text-white transition-colors hover:bg-accent disabled:opacity-50"
-                              title={t("install.oneClickInstall")}
-                            >
-                              {installing === skill.id ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Plus className="h-3.5 w-3.5" />
-                              )}
-                            </button>
+                            {isInstalled ? (
+                              <span
+                                className="rounded-[5px] border border-emerald-500/20 bg-emerald-500/10 p-1 text-emerald-400"
+                                title={t("install.installed")}
+                              >
+                                <Check className="h-3.5 w-3.5" />
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleInstallSkillssh(skill)}
+                                disabled={installing === skill.id}
+                                className="rounded-[5px] border border-accent-border bg-accent-dark p-1 text-white transition-colors hover:bg-accent disabled:opacity-50"
+                                title={t("install.oneClickInstall")}
+                              >
+                                {installing === skill.id ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Plus className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                            )}
                           </div>
                         </div>
 
@@ -507,6 +560,12 @@ export function InstallSkills() {
                               ? `${(skill.installs / 1000).toFixed(0)}k`
                               : skill.installs}
                           </span>
+                          {isInstalled ? (
+                            <span className="inline-flex items-center gap-1 rounded-[5px] border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[13px] leading-4 font-medium text-emerald-400">
+                              <Check className="h-3 w-3" />
+                              {t("install.installed")}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                       );
