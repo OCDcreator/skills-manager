@@ -26,6 +26,12 @@ git push origin main --tags
 
 也可通过 GitHub Actions 手动触发 `Prepare Release` 工作流（自动完成全流程，CHANGELOG 为空模板）。
 
+## CHANGELOG 规范
+
+- 面向用户，描述可感知的功能变更和 bug 修复，不写代码/技术细节
+- 使用英文，覆盖上一个 tag 以来的全部变更
+- 遵循 [Keep a Changelog](https://keepachangelog.com/) 格式
+
 ## 关键路径
 
 | 文件/目录 | 说明 |

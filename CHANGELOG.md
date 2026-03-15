@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.1] - 2026-03-15
 
+### Added
+- Skill installation can now be cancelled mid-progress
+- Clone timeout to prevent installations from hanging indefinitely
+- Duplicate install detection to prevent reinstalling the same skill
+- Single instance restriction to prevent multiple app windows
+
+### Changed
+- Improved app responsiveness by making all backend operations async
+
 ### Fixed
-- Add TAURI_SIGNING_PRIVATE_KEY_PASSWORD to release workflow
-- Enable `createUpdaterArtifacts` in tauri.conf.json
-- Add post-build job to verify updater assets (latest.json and .sig files)
+- Skill directory not recognized when folder name differs from SKILL.md name
+- Install button not showing "Cancel" label text
+- Auto-update not working on Windows
+- Release builds missing updater signature files
 ## [1.4.0] - 2026-03-14
 
 ### Added
