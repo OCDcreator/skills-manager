@@ -313,7 +313,7 @@
     "gitLastCommit": "Last commit",
     "gitBranch": "Branch",
     "gitCommitMessage": "Commit message",
-    "gitCommitPlaceholder": "Update skills library",
+    "gitCommitPlaceholder": "backup: sync skills library",
     "gitNoRemote": "No remote configured",
     "gitNeedRemoteSetup": "Set a remote repository URL in Settings first",
     "gitNeedPullFirst": "Remote has newer changes. Pull first to avoid conflicts.",

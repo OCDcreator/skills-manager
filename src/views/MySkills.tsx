@@ -33,6 +33,16 @@ function getToolDisplayName(toolKey: string, tools: ToolInfo[]) {
   return tools.find((tool) => tool.key === toolKey)?.display_name || toolKey;
 }
 
+function displaySnapshotLabel(tag: string) {
+  const raw = tag.startsWith("sm-v-") ? tag.slice("sm-v-".length) : tag;
+  const parts = raw.split("-");
+  if (parts.length < 3) return raw;
+  // Supported forms:
+  // 1) YYYYMMDD-HHMMSS-<short_sha>
+  // 2) YYYYMMDD-HHMMSS-<millis>-<short_sha>
+  return `${parts[0]}-${parts[1]}`;
+}
+
 export function MySkills() {
   const { t } = useTranslation();
   const {
@@ -448,7 +458,7 @@ export function MySkills() {
       if (committed || status.ahead > 0) {
         const snapshotTag = await api.gitBackupCreateSnapshot();
         await api.gitBackupPush();
-        toast.success(t("mySkills.gitSyncSuccessWithVersion", { tag: snapshotTag }));
+        toast.success(t("mySkills.gitSyncSuccessWithVersion", { tag: displaySnapshotLabel(snapshotTag) }));
       } else {
         toast.success(t("settings.gitUpToDate"));
       }
@@ -469,7 +479,7 @@ export function MySkills() {
     setRestoringVersionTag(restoreVersionTag);
     try {
       await api.gitBackupRestoreVersion(restoreVersionTag);
-      toast.success(t("mySkills.gitVersionRestoreSuccess", { tag: restoreVersionTag }));
+      toast.success(t("mySkills.gitVersionRestoreSuccess", { tag: displaySnapshotLabel(restoreVersionTag) }));
       toast.info(t("mySkills.gitVersionRestoreNeedSync"));
       await Promise.all([refreshGitStatus(), refreshGitVersions(), refreshManagedSkills()]);
       setRestoreVersionTag(null);
@@ -789,7 +799,7 @@ export function MySkills() {
                   className="flex items-center justify-between rounded-md border border-border-subtle bg-bg-secondary px-2.5 py-2"
                 >
                   <div className="min-w-0 pr-3">
-                    <div className="truncate text-[13px] font-medium text-secondary">{version.tag}</div>
+                    <div className="truncate text-[13px] font-medium text-secondary">{displaySnapshotLabel(version.tag)}</div>
                     <div className="truncate text-[12px] text-muted">
                       {version.message || version.commit}
                     </div>
@@ -1113,7 +1123,7 @@ export function MySkills() {
       <ConfirmDialog
         open={restoreVersionTag !== null}
         title={t("mySkills.gitVersionRestoreTitle")}
-        message={t("mySkills.gitVersionRestoreConfirm", { tag: restoreVersionTag || "" })}
+        message={t("mySkills.gitVersionRestoreConfirm", { tag: displaySnapshotLabel(restoreVersionTag || "") })}
         tone="warning"
         confirmLabel={t("mySkills.gitVersionRestore")}
         onClose={() => setRestoreVersionTag(null)}

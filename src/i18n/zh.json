@@ -313,7 +313,7 @@
     "gitLastCommit": "最新提交",
     "gitBranch": "分支",
     "gitCommitMessage": "提交信息",
-    "gitCommitPlaceholder": "更新 Skills 库",
+    "gitCommitPlaceholder": "backup: 同步 Skills 库",
     "gitNoRemote": "未配置远程仓库",
     "gitNeedRemoteSetup": "请先在设置页配置远程仓库地址",
     "gitNeedPullFirst": "远程有更新，请先拉取以避免冲突。",
