@@ -157,7 +157,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (updatable.length > 0) {
             toast.info(
               i18n.t("mySkills.updateNotification", { count: updatable.length }),
-              { duration: 6000 }
+              {
+                duration: 8000,
+                action: {
+                  label: i18n.t("mySkills.viewUpdates"),
+                  onClick: () => {
+                    setDetailSkillId(updatable[0].id);
+                    // Navigate to my-skills page — AppProvider is outside Router,
+                    // so we use window.location for cross-context navigation.
+                    if (!window.location.pathname.endsWith("/my-skills")) {
+                      window.location.href = "/my-skills";
+                    }
+                  },
+                },
+              }
             );
           }
         })

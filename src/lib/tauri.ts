@@ -72,6 +72,7 @@ export interface DiscoveredGroup {
   fingerprint: string | null;
   locations: { id: string; tool: string; found_path: string }[];
   imported: boolean;
+  found_at: number;
 }
 
 export interface ScanResult {

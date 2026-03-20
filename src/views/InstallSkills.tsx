@@ -20,6 +20,8 @@ import {
   Search,
   X,
   MoreHorizontal,
+  Pencil,
+  Calendar,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -69,6 +71,7 @@ export function InstallSkills() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [importingPaths, setImportingPaths] = useState<Set<string>>(new Set());
   const [importingAll, setImportingAll] = useState(false);
+  const [renameEditing, setRenameEditing] = useState<Record<string, string>>({});
   const marketListRef = useRef<HTMLDivElement | null>(null);
   const [sourceOverflowOpen, setSourceOverflowOpen] = useState(false);
   const [sourceOverflowSide, setSourceOverflowSide] = useState<"left" | "right">("left");
@@ -1260,24 +1263,77 @@ export function InstallSkills() {
                       const [primaryLocation, ...otherLocations] = group.locations;
                       const primaryPath = primaryLocation?.found_path;
                       const isImporting = !!primaryPath && importingPaths.has(primaryPath);
+                      const isRenaming = group.name in renameEditing;
+                      const importName = renameEditing[group.name] ?? group.name;
+                      const foundDate = new Date(group.found_at).toLocaleDateString(undefined, {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                      });
 
                       return (
                         <article key={group.name} className="border-b border-border-subtle last:border-b-0">
                           <div className="flex items-start justify-between gap-3 px-3 py-2">
                             <div className="min-w-0 flex-1 space-y-1.5">
                               <div className="flex min-w-0 items-center gap-2">
-                              <h3 className="truncate text-[13px] font-semibold text-secondary">
-                                {group.name}
-                              </h3>
-                              {group.imported ? (
-                                <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[13px] font-semibold text-emerald-400">
-                                  <Check className="h-3 w-3" />
-                                  {t("install.scan.imported")}
+                                {isRenaming ? (
+                                  <input
+                                    autoFocus
+                                    value={renameEditing[group.name]}
+                                    onChange={(e) =>
+                                      setRenameEditing((prev) => ({ ...prev, [group.name]: e.target.value }))
+                                    }
+                                    onBlur={() => {
+                                      if (!renameEditing[group.name]?.trim()) {
+                                        setRenameEditing((prev) => {
+                                          const next = { ...prev };
+                                          delete next[group.name];
+                                          return next;
+                                        });
+                                      }
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Escape") {
+                                        setRenameEditing((prev) => {
+                                          const next = { ...prev };
+                                          delete next[group.name];
+                                          return next;
+                                        });
+                                      } else if (e.key === "Enter") {
+                                        (e.target as HTMLInputElement).blur();
+                                      }
+                                    }}
+                                    className="min-w-0 max-w-[220px] rounded border border-accent-border bg-surface px-1.5 py-0.5 text-[13px] font-semibold text-secondary outline-none focus:ring-1 focus:ring-accent"
+                                  />
+                                ) : (
+                                  <h3 className="truncate text-[13px] font-semibold text-secondary">
+                                    {group.name}
+                                  </h3>
+                                )}
+                                {!group.imported && !isRenaming ? (
+                                  <button
+                                    onClick={() =>
+                                      setRenameEditing((prev) => ({ ...prev, [group.name]: group.name }))
+                                    }
+                                    className="shrink-0 rounded p-0.5 text-muted transition-colors hover:bg-surface-hover hover:text-secondary"
+                                    title={t("install.scan.rename")}
+                                  >
+                                    <Pencil className="h-3 w-3" />
+                                  </button>
+                                ) : null}
+                                {group.imported ? (
+                                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[13px] font-semibold text-emerald-400">
+                                    <Check className="h-3 w-3" />
+                                    {t("install.scan.imported")}
+                                  </span>
+                                ) : null}
+                                <span className="shrink-0 rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[13px] text-muted">
+                                  {t("install.scan.locations", { count: group.locations.length })}
                                 </span>
-                              ) : null}
-                              <span className="shrink-0 rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[13px] text-muted">
-                                {t("install.scan.locations", { count: group.locations.length })}
-                              </span>
+                                <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted">
+                                  <Calendar className="h-3 w-3" />
+                                  {foundDate}
+                                </span>
                               </div>
 
                               {primaryLocation ? (
@@ -1295,7 +1351,7 @@ export function InstallSkills() {
                             <div className="flex shrink-0 items-start justify-end">
                               {group.imported ? null : (
                                 <button
-                                  onClick={() => primaryPath && handleImportDiscovered(primaryPath, group.name)}
+                                  onClick={() => primaryPath && handleImportDiscovered(primaryPath, importName)}
                                   disabled={!primaryPath || isImporting}
                                   className="inline-flex items-center justify-center gap-1.5 rounded-[6px] border border-accent-border bg-accent-dark px-2.5 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent disabled:opacity-50"
                                 >

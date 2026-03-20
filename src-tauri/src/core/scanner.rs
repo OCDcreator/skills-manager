@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::path::Path;
 
 use super::content_hash;
+use super::skill_metadata;
 use super::skill_store::DiscoveredSkillRecord;
 use super::tool_adapters;
 
@@ -18,6 +19,7 @@ pub struct DiscoveredGroup {
     pub fingerprint: Option<String>,
     pub locations: Vec<DiscoveredLocation>,
     pub imported: bool,
+    pub found_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,47 +47,53 @@ pub fn scan_local_skills(managed_paths: &[String]) -> Result<ScanPlan> {
             continue;
         }
 
-        let skills_dir = adapter.skills_dir();
-        if !skills_dir.exists() {
-            tools_scanned += 1;
-            continue;
-        }
-
         tools_scanned += 1;
 
-        let entries = match std::fs::read_dir(&skills_dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() && !path.is_symlink() {
+        for scan_dir in adapter.all_scan_dirs() {
+            if !scan_dir.exists() {
                 continue;
             }
 
-            if is_symlink_to_central(&path) {
-                continue;
+            let entries = match std::fs::read_dir(&scan_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() && !path.is_symlink() {
+                    continue;
+                }
+
+                if is_symlink_to_central(&path) {
+                    continue;
+                }
+
+                let path_str = path.to_string_lossy().to_string();
+                if managed_paths.contains(&path_str) {
+                    continue;
+                }
+
+                let name = skill_metadata::infer_skill_name(&path);
+                let fingerprint = content_hash::hash_directory(&path).ok();
+
+                let found_at = std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+
+                discovered.push(DiscoveredSkillRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    tool: adapter.key.clone(),
+                    found_path: path_str,
+                    name_guess: Some(name),
+                    fingerprint,
+                    found_at,
+                    imported_skill_id: None,
+                });
             }
-
-            let path_str = path.to_string_lossy().to_string();
-            if managed_paths.contains(&path_str) {
-                continue;
-            }
-
-            let name = entry.file_name().to_string_lossy().to_string();
-            let fingerprint = content_hash::hash_directory(&path).ok();
-
-            let now = chrono::Utc::now().timestamp_millis();
-            discovered.push(DiscoveredSkillRecord {
-                id: uuid::Uuid::new_v4().to_string(),
-                tool: adapter.key.clone(),
-                found_path: path_str,
-                name_guess: Some(name),
-                fingerprint,
-                found_at: now,
-                imported_skill_id: None,
-            });
         }
     }
 
@@ -103,17 +111,21 @@ pub fn group_discovered(records: &[DiscoveredSkillRecord]) -> Vec<DiscoveredGrou
 
     for rec in records {
         let name = rec.name_guess.clone().unwrap_or_else(|| "unknown".into());
-        let entry = groups
-            .entry(name.clone())
-            .or_insert_with(|| DiscoveredGroup {
-                name,
-                fingerprint: rec.fingerprint.clone(),
-                locations: Vec::new(),
-                imported: false,
-            });
+        let entry = groups.entry(name.clone()).or_insert_with(|| DiscoveredGroup {
+            name,
+            fingerprint: rec.fingerprint.clone(),
+            locations: Vec::new(),
+            imported: false,
+            found_at: rec.found_at,
+        });
 
         if rec.imported_skill_id.is_some() {
             entry.imported = true;
+        }
+
+        // Use the earliest found_at
+        if rec.found_at < entry.found_at {
+            entry.found_at = rec.found_at;
         }
 
         entry.locations.push(DiscoveredLocation {
