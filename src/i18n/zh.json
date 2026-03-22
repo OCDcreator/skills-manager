@@ -347,7 +347,8 @@
     "delete": "删除",
     "rename": "重命名",
     "save": "保存",
-    "create": "创建"
+    "create": "创建",
+    "search": "搜索"
   },
   "scenario": {
     "create": "新建场景",

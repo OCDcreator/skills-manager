@@ -347,7 +347,8 @@
     "delete": "Delete",
     "rename": "Rename",
     "save": "Save",
-    "create": "Create"
+    "create": "Create",
+    "search": "Search"
   },
   "scenario": {
     "create": "New Scenario",
