@@ -79,27 +79,9 @@ impl PreparedSource {
 }
 
 pub fn install_from_local(source: &Path, name: Option<&str>) -> Result<InstallResult> {
-    let prepared = PreparedSource::open(source)?;
-    let skill_dir = prepared.skill_dir();
-
-    let sanitized_name = match name {
-        Some(n) if !n.is_empty() => sanitize_skill_name(n)
-            .ok_or_else(|| anyhow::anyhow!("Invalid skill name: '{}'", n))?,
-        _ => skill_metadata::infer_skill_name(skill_dir),
-    };
-
-    // Read the raw SKILL.md name from the source for collision detection.
-    let source_meta_name = skill_metadata::parse_skill_md(skill_dir)
-        .name
-        .unwrap_or_else(|| sanitized_name.clone());
-
-    let skills_dir = central_repo::skills_dir();
-    let dest = unique_skill_dest(&skills_dir, &sanitized_name, &source_meta_name);
-    let final_name = dest
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| sanitized_name.clone());
-    install_skill_dir_to_destination(skill_dir, &final_name, &dest)
+    let skill_name = resolve_local_skill_name(source, name)?;
+    let dest = central_repo::skills_dir().join(&skill_name);
+    install_from_local_to_destination(source, Some(&skill_name), &dest)
 }
 
 pub fn install_from_local_to_destination(
@@ -192,39 +174,6 @@ fn safe_extract(archive: &mut zip::ZipArchive<std::fs::File>, dest: &Path) -> Re
     Ok(())
 }
 
-/// Return a unique destination directory for a skill inside `parent`.
-///
-/// If `parent/name` does not exist, returns it directly.  If it already exists,
-/// reads the SKILL.md metadata from the existing directory and compares the raw
-/// (pre-sanitization) name with `source_meta_name`.  A match means this is a
-/// reinstall/update of the same skill, so the directory is reused.  A mismatch
-/// means different skills collided after sanitization, so a numeric suffix
-/// (`-2`, `-3`, …) is appended to avoid overwriting.
-fn unique_skill_dest(parent: &Path, sanitized_name: &str, source_meta_name: &str) -> PathBuf {
-    let candidate = parent.join(sanitized_name);
-    if !candidate.exists() {
-        return candidate;
-    }
-
-    // Compare the raw SKILL.md name of the existing installation with the
-    // incoming source's raw name.  If they match, treat as reinstall/update.
-    let existing_meta_name = skill_metadata::parse_skill_md(&candidate)
-        .name
-        .unwrap_or_else(|| sanitized_name.to_string());
-    if existing_meta_name == source_meta_name {
-        return candidate;
-    }
-
-    // Different skills whose names collide after sanitization — disambiguate.
-    for i in 2u32.. {
-        let suffixed = parent.join(format!("{}-{}", sanitized_name, i));
-        if !suffixed.exists() {
-            return suffixed;
-        }
-    }
-    candidate // unreachable in practice
-}
-
 fn copy_skill_dir(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -252,67 +201,4 @@ fn copy_skill_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
 
-    /// Helper: create a skill directory with a SKILL.md containing the given name.
-    fn make_skill_dir(parent: &Path, dir_name: &str, meta_name: &str) -> PathBuf {
-        let dir = parent.join(dir_name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("SKILL.md"),
-            format!("---\nname: {}\n---\n", meta_name),
-        )
-        .unwrap();
-        dir
-    }
-
-    #[test]
-    fn unique_dest_returns_base_when_free() {
-        let tmp = tempdir().unwrap();
-        let dest = unique_skill_dest(tmp.path(), "my-skill", "my-skill");
-        assert_eq!(dest, tmp.path().join("my-skill"));
-    }
-
-    #[test]
-    fn unique_dest_reuses_dir_for_same_meta_name() {
-        let tmp = tempdir().unwrap();
-        // Existing skill "a-b" has SKILL.md name "a-b"
-        make_skill_dir(tmp.path(), "a-b", "a-b");
-        // Reinstalling same skill (same meta name) → reuse directory
-        let dest = unique_skill_dest(tmp.path(), "a-b", "a-b");
-        assert_eq!(dest, tmp.path().join("a-b"));
-    }
-
-    #[test]
-    fn unique_dest_disambiguates_different_meta_names() {
-        let tmp = tempdir().unwrap();
-        // Existing skill at "a-b" has SKILL.md name "a-b"
-        make_skill_dir(tmp.path(), "a-b", "a-b");
-        // New skill has SKILL.md name "a b" which sanitizes to "a-b" → collision
-        let dest = unique_skill_dest(tmp.path(), "a-b", "a b");
-        assert_eq!(dest, tmp.path().join("a-b-2"));
-    }
-
-    #[test]
-    fn unique_dest_skips_taken_suffixes() {
-        let tmp = tempdir().unwrap();
-        make_skill_dir(tmp.path(), "a-b", "a-b");
-        std::fs::create_dir_all(tmp.path().join("a-b-2")).unwrap();
-
-        let dest = unique_skill_dest(tmp.path(), "a-b", "a b");
-        assert_eq!(dest, tmp.path().join("a-b-3"));
-    }
-
-    #[test]
-    fn unique_dest_no_metadata_defaults_to_sanitized_name() {
-        let tmp = tempdir().unwrap();
-        // Existing dir has no SKILL.md → defaults to sanitized_name
-        std::fs::create_dir_all(tmp.path().join("foo")).unwrap();
-        // Source with same default meta name → reinstall
-        let dest = unique_skill_dest(tmp.path(), "foo", "foo");
-        assert_eq!(dest, tmp.path().join("foo"));
-    }
-}

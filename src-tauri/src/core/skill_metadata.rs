@@ -62,8 +62,12 @@ pub fn is_valid_skill_dir(dir: &Path) -> bool {
 }
 
 /// Sanitize a skill name so it is safe to use as a single directory component.
-/// Strips path separators and `..` traversal, replaces unsafe characters with `-`.
-/// Only allows `[a-zA-Z0-9._-]` for cross-platform filesystem compatibility.
+///
+/// Security-focused: strips path separators, `..` traversal, NUL bytes and
+/// control characters.  All other characters (spaces, unicode, etc.) are
+/// preserved so that distinct input names always produce distinct outputs,
+/// avoiding accidental overwrites from lossy normalization.
+///
 /// Returns `None` if the result would be empty or unsafe.
 pub fn sanitize_skill_name(name: &str) -> Option<String> {
     // Take only the last path component — strips any leading `../` sequences.
@@ -77,30 +81,14 @@ pub fn sanitize_skill_name(name: &str) -> Option<String> {
         return None;
     }
 
-    // Replace any character outside the safe set with `-`, then collapse
-    // consecutive dashes and trim leading/trailing dashes.
-    let clean: String = last
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    // Remove NUL bytes and other control characters (security-critical).
+    let clean: String = last.chars().filter(|c| !c.is_control()).collect();
 
-    // Collapse consecutive dashes and trim edges.
-    let collapsed = clean
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-
-    if collapsed.is_empty() {
+    let trimmed = clean.trim();
+    if trimmed.is_empty() {
         None
     } else {
-        Some(collapsed)
+        Some(trimmed.to_string())
     }
 }
 
@@ -276,24 +264,41 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_replaces_spaces_and_special_chars() {
+    fn sanitize_preserves_spaces_and_special_chars() {
+        // Sanitization only strips security-relevant characters (path traversal,
+        // control chars).  Spaces and other printable chars are preserved so that
+        // distinct names always produce distinct outputs.
         assert_eq!(
             sanitize_skill_name("my skill (v2)"),
-            Some("my-skill-v2".into())
+            Some("my skill (v2)".into())
         );
     }
 
     #[test]
-    fn sanitize_collapses_dashes() {
+    fn sanitize_distinct_inputs_produce_distinct_outputs() {
+        // "a b" and "a-b" must NOT collapse to the same name.
+        let a = sanitize_skill_name("a b");
+        let b = sanitize_skill_name("a-b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn sanitize_removes_control_chars() {
         assert_eq!(
-            sanitize_skill_name("a---b   c"),
-            Some("a-b-c".into())
+            sanitize_skill_name("a\x00b\x07c"),
+            Some("abc".into())
         );
+    }
+
+    #[test]
+    fn sanitize_trims_whitespace() {
+        assert_eq!(sanitize_skill_name("  foo  "), Some("foo".into()));
     }
 
     #[test]
     fn sanitize_rejects_empty_after_cleaning() {
         assert_eq!(sanitize_skill_name("   "), None);
+        assert_eq!(sanitize_skill_name("\x00\x01"), None);
     }
 
     // ── infer_skill_name ──
