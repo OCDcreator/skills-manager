@@ -220,6 +220,20 @@ pub async fn remove_project(store: State<'_, Arc<SkillStore>>, id: String) -> Re
 }
 
 #[tauri::command]
+pub async fn reorder_projects(
+    ids: Vec<String>,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<(), AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .reorder_projects(&ids)
+            .map_err(AppError::db)
+    })
+    .await?
+}
+
+#[tauri::command]
 pub async fn scan_projects(root: String) -> Result<Vec<String>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let root_path = Path::new(&root);

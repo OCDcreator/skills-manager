@@ -270,7 +270,9 @@ pub async fn install_git(
     cancel_registry: State<'_, Arc<InstallCancelRegistry>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), AppError> {
+    git_fetcher::validate_git_url(&repo_url).map_err(AppError::git)?;
     let store = store.inner().clone();
+    let proxy_url = store.proxy_url();
     let registry = cancel_registry.inner().clone();
     let cancel_key = repo_url.clone();
     let cancel = registry.register(&cancel_key);
@@ -288,7 +290,7 @@ pub async fn install_git(
         emit_progress("cloning");
         let parsed = git_fetcher::parse_git_source(&repo_url);
         let temp_dir =
-            git_fetcher::clone_repo_ref(&parsed.clone_url, parsed.branch.as_deref(), Some(&cancel)).map_err(AppError::git_or_cancelled)?;
+            git_fetcher::clone_repo_ref(&parsed.clone_url, parsed.branch.as_deref(), Some(&cancel), proxy_url.as_deref()).map_err(AppError::git_or_cancelled)?;
 
         emit_progress("installing");
         let install_result = (|| -> Result<(installer::InstallResult, InstallSourceMetadata), AppError> {
@@ -330,6 +332,7 @@ pub async fn install_from_skillssh(
     app_handle: tauri::AppHandle,
 ) -> Result<(), AppError> {
     let store = store.inner().clone();
+    let proxy_url = store.proxy_url();
     let registry = cancel_registry.inner().clone();
     let cancel_key_owned = format!("{}/{}", source, skill_id);
     let cancel = registry.register(&cancel_key_owned);
@@ -347,7 +350,7 @@ pub async fn install_from_skillssh(
 
         emit_progress("cloning");
         let repo_url = format!("https://github.com/{}.git", source);
-        let temp_dir = git_fetcher::clone_repo_ref(&repo_url, None, Some(&cancel)).map_err(AppError::git_or_cancelled)?;
+        let temp_dir = git_fetcher::clone_repo_ref(&repo_url, None, Some(&cancel), proxy_url.as_deref()).map_err(AppError::git_or_cancelled)?;
 
         emit_progress("installing");
         let install_result = (|| -> Result<(installer::InstallResult, InstallSourceMetadata), AppError> {
@@ -509,8 +512,9 @@ pub async fn check_skill_update(
     store: State<'_, Arc<SkillStore>>,
 ) -> Result<ManagedSkillDto, AppError> {
     let store = store.inner().clone();
+    let proxy_url = store.proxy_url();
     tauri::async_runtime::spawn_blocking(move || {
-        check_skill_update_internal(&store, &skill_id, force.unwrap_or(false))
+        check_skill_update_internal(&store, &skill_id, force.unwrap_or(false), proxy_url.as_deref())
     })
     .await?
 }
@@ -521,6 +525,7 @@ pub async fn check_all_skill_updates(
     store: State<'_, Arc<SkillStore>>,
 ) -> Result<(), AppError> {
     let store = store.inner().clone();
+    let proxy_url = store.proxy_url();
     tauri::async_runtime::spawn_blocking(move || {
         let force_check = force.unwrap_or(false);
         let ids: Vec<String> = store
@@ -532,7 +537,7 @@ pub async fn check_all_skill_updates(
         let mut failed = Vec::new();
 
         for skill_id in ids {
-            if let Err(err) = check_skill_update_internal(&store, &skill_id, force_check) {
+            if let Err(err) = check_skill_update_internal(&store, &skill_id, force_check, proxy_url.as_deref()) {
                 failed.push(format!("{skill_id}: {err}"));
             }
         }
@@ -557,6 +562,7 @@ pub async fn update_skill(
     cancel_registry: State<'_, Arc<InstallCancelRegistry>>,
 ) -> Result<ManagedSkillDto, AppError> {
     let store = store.inner().clone();
+    let proxy_url = store.proxy_url();
     let registry = cancel_registry.inner().clone();
     let cancel_key = format!("update:{}", skill_id);
     let cancel = registry.register(&cancel_key);
@@ -573,9 +579,11 @@ pub async fn update_skill(
         }
 
         let git_source = git_source_from_skill(&skill)?;
+        git_fetcher::validate_git_url(&git_source.clone_url).map_err(AppError::git)?;
         let remote_revision = git_fetcher::resolve_remote_revision(
             &git_source.clone_url,
             git_source.branch.as_deref(),
+            proxy_url.as_deref(),
         )
         .map_err(|e| {
             let message = e.to_string();
@@ -593,7 +601,7 @@ pub async fn update_skill(
             .map_err(AppError::db)?;
 
         let temp_dir =
-            git_fetcher::clone_repo_ref(&git_source.clone_url, git_source.branch.as_deref(), Some(&cancel)).map_err(AppError::git_or_cancelled)?;
+            git_fetcher::clone_repo_ref(&git_source.clone_url, git_source.branch.as_deref(), Some(&cancel), proxy_url.as_deref()).map_err(AppError::git_or_cancelled)?;
         let update_result = (|| -> Result<(), AppError> {
             git_fetcher::checkout_revision(&temp_dir, &remote_revision).map_err(AppError::git)?;
             let skill_dir = resolve_skill_dir(
@@ -844,6 +852,7 @@ fn check_skill_update_internal(
     store: &SkillStore,
     skill_id: &str,
     force: bool,
+    proxy_url: Option<&str>,
 ) -> Result<ManagedSkillDto, AppError> {
     let skill = store
         .get_skill_by_id(skill_id)
@@ -873,7 +882,7 @@ fn check_skill_update_internal(
                     .map_err(AppError::db)?;
             }
 
-            match git_fetcher::resolve_remote_revision(&git_source.clone_url, git_source.branch.as_deref()) {
+            match git_fetcher::resolve_remote_revision(&git_source.clone_url, git_source.branch.as_deref(), proxy_url) {
                 Ok(remote_revision) => {
                     let update_status = match skill.source_revision.as_deref() {
                         Some(current) if current == remote_revision => "up_to_date",

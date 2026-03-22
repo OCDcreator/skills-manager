@@ -4,7 +4,7 @@ use walkdir::WalkDir;
 
 use super::central_repo;
 use super::content_hash;
-use super::skill_metadata;
+use super::skill_metadata::{self, sanitize_skill_name};
 
 pub struct InstallResult {
     pub name: String,
@@ -42,7 +42,7 @@ impl PreparedSource {
         let temp_dir = tempfile::tempdir()?;
         let file = std::fs::File::open(source)?;
         let mut archive = zip::ZipArchive::new(file)?;
-        archive.extract(temp_dir.path())?;
+        safe_extract(&mut archive, temp_dir.path())?;
 
         // Find SKILL.md
         let mut found = Vec::new();
@@ -93,7 +93,10 @@ pub fn install_from_local_to_destination(
     let skill_dir = prepared.skill_dir();
 
     let skill_name = match name {
-        Some(n) if !n.is_empty() => n.to_string(),
+        Some(n) if !n.is_empty() => {
+            sanitize_skill_name(n)
+                .ok_or_else(|| anyhow::anyhow!("Invalid skill name: '{}'", n))?
+        }
         _ => skill_metadata::infer_skill_name(skill_dir),
     };
     install_skill_dir_to_destination(skill_dir, &skill_name, destination)
@@ -104,7 +107,10 @@ pub fn resolve_local_skill_name(source: &Path, name: Option<&str>) -> Result<Str
     let skill_dir = prepared.skill_dir();
 
     Ok(match name {
-        Some(n) if !n.is_empty() => n.to_string(),
+        Some(n) if !n.is_empty() => {
+            sanitize_skill_name(n)
+                .ok_or_else(|| anyhow::anyhow!("Invalid skill name: '{}'", n))?
+        }
         _ => skill_metadata::infer_skill_name(skill_dir),
     })
 }
@@ -137,6 +143,50 @@ pub fn install_skill_dir_to_destination(
     })
 }
 
+/// Extract a ZIP archive into `dest`, skipping any entry whose path would
+/// escape the destination directory (Zip Slip defence).
+fn safe_extract(archive: &mut zip::ZipArchive<std::fs::File>, dest: &Path) -> Result<()> {
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+
+        // enclosed_name() returns None for absolute paths and entries that
+        // contain `..` components, so those are silently skipped.
+        let entry_path = match entry.enclosed_name() {
+            Some(name) => dest.join(name),
+            None => continue,
+        };
+
+        // Belt-and-suspenders: verify the resolved path stays inside dest.
+        if !entry_path.starts_with(dest) {
+            continue;
+        }
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&entry_path)?;
+        } else {
+            if let Some(parent) = entry_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut outfile = std::fs::File::create(&entry_path)?;
+            std::io::copy(&mut entry, &mut outfile)?;
+
+            // Restore Unix file permissions (especially executable bits)
+            // from the ZIP entry metadata.
+            #[cfg(unix)]
+            {
+                if let Some(mode) = entry.unix_mode() {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &entry_path,
+                        std::fs::Permissions::from_mode(mode),
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn copy_skill_dir(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -149,6 +199,11 @@ fn copy_skill_dir(src: &Path, dst: &Path) -> Result<()> {
             continue;
         }
 
+        // Skip symlinks to prevent exfiltration of files outside the skill directory
+        if ft.is_symlink() {
+            continue;
+        }
+
         let dest_path = dst.join(&name);
         if ft.is_dir() {
             copy_skill_dir(&entry.path(), &dest_path)?;
@@ -158,3 +213,5 @@ fn copy_skill_dir(src: &Path, dst: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+

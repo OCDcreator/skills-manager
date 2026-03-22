@@ -1,7 +1,7 @@
 {
   "name": "skills-manager",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,10 +10,11 @@
     "preview": "vite preview",
     "release:prepare": "node scripts/prepare-release.mjs",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@hello-pangea/dnd": "^18.0.1",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/cli": "^2.10.0",
     "@tauri-apps/plugin-dialog": "^2.6.0",

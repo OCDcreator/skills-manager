@@ -1,8 +1,183 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 mod commands;
 mod core;
+
+/// Shared flag: when true, CloseRequested should NOT be prevented.
+pub static QUITTING: AtomicBool = AtomicBool::new(false);
+const MAIN_TRAY_ID: &str = "main-tray";
+const CUSTOM_TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/tray-icon-32.png");
+
+fn parse_bool_setting(value: Option<String>, default: bool) -> bool {
+    match value.as_deref().map(str::trim).map(str::to_ascii_lowercase) {
+        Some(v) if matches!(v.as_str(), "true" | "1" | "yes" | "on") => true,
+        Some(v) if matches!(v.as_str(), "false" | "0" | "no" | "off") => false,
+        _ => default,
+    }
+}
+
+fn is_tray_icon_enabled(store: &Arc<core::skill_store::SkillStore>) -> bool {
+    let value = store.get_setting("show_tray_icon").ok().flatten();
+    parse_bool_setting(value, true)
+}
+
+fn restore_main_window(app: &tauri::AppHandle) {
+    let app_for_main = app.clone();
+    if let Err(err) = app.run_on_main_thread(move || {
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(err) = app_for_main.set_dock_visibility(true) {
+                log::error!("Failed to show Dock icon on macOS: {err}");
+            }
+            if let Err(err) = app_for_main.set_activation_policy(tauri::ActivationPolicy::Regular) {
+                log::error!("Failed to set activation policy to Regular on macOS: {err}");
+            }
+            if let Err(err) = app_for_main.show() {
+                log::error!("Failed to show app on macOS: {err}");
+            }
+        }
+
+        if let Some(w) = app_for_main.get_webview_window("main") {
+            if let Err(err) = w.show() {
+                log::error!("Failed to show main window: {err}");
+            }
+            if let Err(err) = w.unminimize() {
+                log::error!("Failed to unminimize main window: {err}");
+            }
+            if let Err(err) = w.set_focus() {
+                log::error!("Failed to focus main window: {err}");
+            }
+        } else {
+            log::error!("Main window not found while restoring from tray");
+        }
+    }) {
+        log::error!("Failed to schedule restore_main_window on main thread: {err}");
+    }
+}
+
+fn request_quit(app: &tauri::AppHandle) {
+    let app_for_main = app.clone();
+    if let Err(err) = app.run_on_main_thread(move || {
+        quit_app(&app_for_main);
+    }) {
+        log::error!("Failed to schedule quit on main thread: {err}");
+        // Fallback: attempt quit anyway.
+        quit_app(app);
+    }
+}
+
+fn load_custom_tray_icon() -> Option<tauri::image::Image<'static>> {
+    let img =
+        image::load_from_memory_with_format(CUSTOM_TRAY_ICON_BYTES, image::ImageFormat::Png).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some(tauri::image::Image::new_owned(
+        rgba.into_raw(),
+        width,
+        height,
+    ))
+}
+
+fn ensure_tray_icon(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if app.tray_by_id(MAIN_TRAY_ID).is_some() {
+        return Ok(());
+    }
+
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    let mut builder = TrayIconBuilder::with_id(MAIN_TRAY_ID)
+        .tooltip("Skills Manager")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                log::info!("Tray menu clicked: show");
+                restore_main_window(app)
+            }
+            "quit" => {
+                log::info!("Tray menu clicked: quit");
+                request_quit(app)
+            }
+            _ => {}
+        });
+
+    if let Some(icon) = load_custom_tray_icon().or_else(|| app.default_window_icon().cloned()) {
+        builder = builder.icon(icon);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Render the original white PNG directly for maximum brightness.
+        builder = builder.icon_as_template(false);
+    }
+
+    // On macOS, left-click on tray icon opens the menu by default;
+    // on Windows/Linux, left-click restores the window directly.
+    if !cfg!(target_os = "macos") {
+        builder = builder
+            .show_menu_on_left_click(false)
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    restore_main_window(tray.app_handle());
+                }
+            });
+    }
+
+    let _tray = builder.build(app)?;
+    log::info!("Tray icon created");
+    Ok(())
+}
+
+pub fn set_tray_icon_enabled(app: &tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let app_for_main = app.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let result = if enabled {
+            ensure_tray_icon(&app_for_main).map_err(|e| e.to_string())
+        } else {
+            let _ = app_for_main.remove_tray_by_id(MAIN_TRAY_ID);
+            log::info!("Tray icon removed");
+            Ok(())
+        };
+        let _ = tx.send(result);
+    })
+    .map_err(|e| e.to_string())?;
+
+    rx.recv()
+        .map_err(|e| format!("Failed to receive tray update result: {e}"))?
+}
+
+/// Quit the application cleanly: destroy the main window, then exit.
+/// In dev mode, also kill sibling processes in the same process group
+/// so that `tauri dev`'s beforeDevCommand (vite) gets cleaned up.
+pub fn quit_app(app: &tauri::AppHandle) {
+    QUITTING.store(true, Ordering::SeqCst);
+    if let Some(w) = app.get_webview_window("main") {
+        if let Err(err) = w.destroy() {
+            log::error!("Failed to destroy main window while quitting: {err}");
+        }
+    }
+    // In dev mode, kill sibling processes (vite dev server) by signaling the process group.
+    // Uses libc directly to avoid platform-specific `kill` command syntax differences.
+    #[cfg(unix)]
+    unsafe {
+        // getpgrp() returns our process group ID; kill(-pgid, SIGTERM) sends to all in the group.
+        let pgid = libc::getpgrp();
+        libc::kill(-pgid, libc::SIGTERM);
+    }
+    app.exit(0);
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +189,7 @@ pub fn run() {
     let store = Arc::new(
         core::skill_store::SkillStore::new(&db_path).expect("Failed to initialize database"),
     );
+    let store_for_setup = store.clone();
     initialize_startup_scenario(&store).expect("Failed to initialize startup scenario");
 
     let cancel_registry = Arc::new(core::install_cancel::InstallCancelRegistry::new());
@@ -22,17 +198,13 @@ pub fn run() {
         .manage(store)
         .manage(cancel_registry)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            restore_main_window(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
+        .setup(move |app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -40,11 +212,32 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            if is_tray_icon_enabled(&store_for_setup) {
+                ensure_tray_icon(app.handle())?;
+            }
+
+            // Intercept window close — let frontend decide (close vs hide to tray)
+            // When QUITTING is set, allow the close to proceed so the process fully exits.
+            let win = app.get_webview_window("main").unwrap();
+            let win_for_event = win.clone();
+            win.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if QUITTING.load(Ordering::SeqCst) {
+                        return; // allow close
+                    }
+                    win_for_event.emit("window-close-requested", ()).ok();
+                    api.prevent_close();
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             // Tools
             commands::tools::get_tool_status,
+            commands::tools::set_tool_enabled,
+            commands::tools::set_all_tools_enabled,
             // Skills
             commands::skills::get_managed_skills,
             commands::skills::get_skills_for_scenario,
@@ -79,6 +272,8 @@ pub fn run() {
             commands::settings::get_central_repo_path,
             commands::settings::open_central_repo_folder,
             commands::settings::check_app_update,
+            commands::settings::app_exit,
+            commands::settings::hide_to_tray,
             // Git Backup
             commands::git_backup::git_backup_status,
             commands::git_backup::git_backup_init,
@@ -114,6 +309,7 @@ pub fn run() {
             commands::scenarios::add_skill_to_scenario,
             commands::scenarios::remove_skill_from_scenario,
             commands::scenarios::reorder_scenarios,
+            commands::projects::reorder_projects,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

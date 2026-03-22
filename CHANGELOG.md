@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-03-22
+
+### Added
+- Custom tray icon with full-color RGBA rendering on macOS
+- Hide-to-tray on window close with configurable close action dialog
+- Tray icon toggle in settings with lazy tray creation
+- Proxy support for git clone and network requests
+- Multi-select mode and batch delete for My Skills
+- Enable/disable toggle for agents in Settings
+
+### Fixed
+- Improved tray close behavior with proper quit flow and UI polish
+- Consolidated proxy handling and added URL validation
+- Security hardening across frontend, backend, and CI
+- Better error handling for batch delete and missing i18n keys
 ## [1.6.0] - 2026-03-19
 
 ### Added

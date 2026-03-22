@@ -41,10 +41,52 @@ pub fn parse_git_source(url: &str) -> ParsedGitSource {
     }
 }
 
+/// Validate that a URL uses an allowed scheme for git operations.
+/// Only permits `https://`, `http://`, `ssh://`, and SCP-style `git@` URLs,
+/// plus shorthand like `user/repo` (no scheme). Rejects everything else
+/// including `file://`, `ext::`, bare local paths, and UNC paths.
+pub fn validate_git_url(url: &str) -> Result<()> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_lowercase();
+
+    // Explicitly allowed schemes
+    if lower.starts_with("https://")
+        || lower.starts_with("http://")
+        || lower.starts_with("ssh://")
+        || lower.starts_with("git@")
+    {
+        return Ok(());
+    }
+
+    // Allow GitHub/GitLab shorthand like "user/repo" or "user/repo.git"
+    // Must contain exactly one '/', no scheme separator, no backslash,
+    // and must not look like a Windows absolute path (e.g. "C:\repo").
+    if !trimmed.contains("://")
+        && !trimmed.contains('\\')
+        && !trimmed.starts_with('/')
+        && !trimmed.starts_with('.')
+        && !trimmed.starts_with('~')
+        && trimmed.contains('/')
+    {
+        // Reject Windows drive letters like "C:/repo"
+        let bytes = trimmed.as_bytes();
+        let is_windows_path =
+            bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+        if !is_windows_path {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!(
+        "URL scheme not allowed: only https, http, ssh, and git@ are permitted"
+    );
+}
+
 pub fn clone_repo_ref(
     url: &str,
     branch: Option<&str>,
     cancel: Option<&Arc<AtomicBool>>,
+    proxy_url: Option<&str>,
 ) -> Result<PathBuf> {
     let temp_dir =
         std::env::temp_dir().join(format!("skills-manager-clone-{}", uuid::Uuid::new_v4()));
@@ -53,6 +95,10 @@ pub fn clone_repo_ref(
     // Try system git first (faster, supports SSH)
     let mut command = git_command();
     command.arg("clone").arg("--depth").arg("1");
+    if let Some(proxy) = proxy_url.filter(|s| !s.is_empty()) {
+        command.arg("-c").arg(format!("http.proxy={proxy}"));
+        command.arg("-c").arg(format!("https.proxy={proxy}"));
+    }
     if let Some(branch) = branch {
         command.arg("--branch").arg(branch);
     }
@@ -111,6 +157,11 @@ pub fn clone_repo_ref(
     });
     let mut fetch_opts = git2::FetchOptions::new();
     fetch_opts.remote_callbacks(callbacks);
+    if let Some(proxy) = proxy_url.filter(|s| !s.is_empty()) {
+        let mut proxy_opts = git2::ProxyOptions::new();
+        proxy_opts.url(proxy);
+        fetch_opts.proxy_options(proxy_opts);
+    }
     builder.fetch_options(fetch_opts);
 
     builder
@@ -138,8 +189,8 @@ pub fn get_head_revision(repo_dir: &Path) -> Result<String> {
     Ok(head.id().to_string())
 }
 
-pub fn resolve_remote_revision(url: &str, branch: Option<&str>) -> Result<String> {
-    if let Ok(revision) = resolve_remote_revision_with_git(url, branch) {
+pub fn resolve_remote_revision(url: &str, branch: Option<&str>, proxy_url: Option<&str>) -> Result<String> {
+    if let Ok(revision) = resolve_remote_revision_with_git(url, branch, proxy_url) {
         return Ok(revision);
     }
 
@@ -148,7 +199,11 @@ pub fn resolve_remote_revision(url: &str, branch: Option<&str>) -> Result<String
         uuid::Uuid::new_v4()
     )))?;
     let mut remote = repo.remote_anonymous(url)?;
-    remote.connect(Direction::Fetch)?;
+    let mut proxy_opts = git2::ProxyOptions::new();
+    if let Some(proxy) = proxy_url.filter(|s| !s.is_empty()) {
+        proxy_opts.url(proxy);
+    }
+    remote.connect_auth(Direction::Fetch, None, Some(proxy_opts))?;
     let refs = remote.list()?;
 
     if let Some(branch) = branch {
@@ -288,11 +343,16 @@ fn parse_github_tree_url(url: &str) -> Option<(String, String, Option<String>)> 
     Some((clone_url, branch, subpath))
 }
 
-fn resolve_remote_revision_with_git(url: &str, branch: Option<&str>) -> Result<String> {
+fn resolve_remote_revision_with_git(url: &str, branch: Option<&str>, proxy_url: Option<&str>) -> Result<String> {
     let target = branch
         .map(|branch| format!("refs/heads/{branch}"))
         .unwrap_or_else(|| "HEAD".to_string());
-    let output = git_command()
+    let mut cmd = git_command();
+    if let Some(proxy) = proxy_url.filter(|s| !s.is_empty()) {
+        cmd.arg("-c").arg(format!("http.proxy={proxy}"));
+        cmd.arg("-c").arg(format!("https.proxy={proxy}"));
+    }
+    let output = cmd
         .args(["ls-remote", url, &target])
         .output()
         .with_context(|| format!("Failed to query remote {}", url))?;

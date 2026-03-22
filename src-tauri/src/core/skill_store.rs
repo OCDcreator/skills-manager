@@ -4,8 +4,14 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use super::crypto;
+
+/// Settings keys whose values are encrypted at rest with AES-256-GCM.
+const SENSITIVE_KEYS: &[&str] = &["proxy_url", "git_backup_remote_url"];
+
 pub struct SkillStore {
     conn: Mutex<Connection>,
+    secret_key: [u8; 32],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,8 +88,16 @@ impl SkillStore {
 
         super::migrations::run_migrations(&conn)?;
 
+        // Derive key file path from the database directory.
+        let key_path = db_path
+            .parent()
+            .map(|p| p.join(".secret.key"))
+            .unwrap_or_else(|| PathBuf::from(".secret.key"));
+        let secret_key = crypto::load_or_create_key(&key_path)?;
+
         Ok(Self {
             conn: Mutex::new(conn),
+            secret_key,
         })
     }
 
@@ -451,18 +465,54 @@ impl SkillStore {
 
     // ── Settings ──
 
+    pub fn proxy_url(&self) -> Option<String> {
+        self.get_setting("proxy_url").ok().flatten().filter(|s| !s.is_empty())
+    }
+
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
-        let mut rows = stmt.query_map(params![key], |row| row.get::<_, String>(0))?;
-        Ok(rows.next().and_then(|r| r.ok()))
+        // Read the raw stored value while holding the lock, then release it
+        // before any write-back so we don't re-enter the mutex.
+        let raw = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+            let mut rows = stmt.query_map(params![key], |row| row.get::<_, String>(0))?;
+            rows.next().and_then(|r| r.ok())
+        };
+
+        let value = match raw {
+            None => return Ok(None),
+            Some(v) => v,
+        };
+
+        if SENSITIVE_KEYS.contains(&key) {
+            if crypto::is_encrypted(&value) {
+                // Happy path: already encrypted, just decrypt.
+                Ok(Some(crypto::decrypt(&self.secret_key, &value)?))
+            } else {
+                // Backward compat: old plaintext value — upgrade it silently.
+                let encrypted = crypto::encrypt(&self.secret_key, &value)?;
+                let conn = self.conn.lock().unwrap();
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                    params![key, encrypted],
+                )?;
+                Ok(Some(value))
+            }
+        } else {
+            Ok(Some(value))
+        }
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let stored = if SENSITIVE_KEYS.contains(&key) {
+            crypto::encrypt(&self.secret_key, value)?
+        } else {
+            value.to_string()
+        };
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
-            params![key, value],
+            params![key, stored],
         )?;
         Ok(())
     }
@@ -530,12 +580,27 @@ impl SkillStore {
 
     pub fn reorder_scenarios(&self, ids: &[String]) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
         for (i, id) in ids.iter().enumerate() {
-            conn.execute(
+            tx.execute(
                 "UPDATE scenarios SET sort_order = ?1 WHERE id = ?2",
                 params![i as i32, id],
             )?;
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn reorder_projects(&self, ids: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        for (i, id) in ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE projects SET sort_order = ?1 WHERE id = ?2",
+                params![i as i32, id],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 

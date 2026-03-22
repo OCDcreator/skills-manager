@@ -3,7 +3,7 @@ use std::sync::Arc;
 use semver::Version;
 use tauri::State;
 
-use crate::core::{central_repo, error::AppError, skill_store::SkillStore};
+use crate::core::{central_repo, error::AppError, skill_store::SkillStore, skillssh_api};
 
 #[derive(serde::Serialize)]
 pub struct AppUpdateInfo {
@@ -24,15 +24,31 @@ pub async fn get_settings(key: String, store: State<'_, Arc<SkillStore>>) -> Res
 
 #[tauri::command]
 pub async fn set_settings(
+    app: tauri::AppHandle,
     key: String,
     value: String,
     store: State<'_, Arc<SkillStore>>,
 ) -> Result<(), AppError> {
     let store = store.inner().clone();
+    let key_for_store = key.clone();
+    let value_for_store = value.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.set_setting(&key, &value).map_err(AppError::db)
+        store.set_setting(&key_for_store, &value_for_store).map_err(AppError::db)?;
+        if key_for_store == "show_tray_icon" {
+            let tray_enabled = matches!(value_for_store.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on");
+            if !tray_enabled {
+                store.set_setting("close_action", "close").map_err(AppError::db)?;
+            }
+        }
+        Ok::<(), AppError>(())
     })
-    .await?
+    .await??;
+
+    if key == "show_tray_icon" {
+        let enabled = matches!(value.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on");
+        crate::set_tray_icon_enabled(&app, enabled).map_err(AppError::io)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -75,13 +91,11 @@ pub async fn open_central_repo_folder() -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub async fn check_app_update(app: tauri::AppHandle) -> Result<AppUpdateInfo, AppError> {
+pub async fn check_app_update(app: tauri::AppHandle, store: State<'_, Arc<SkillStore>>) -> Result<AppUpdateInfo, AppError> {
     let current_version = app.config().version.clone().unwrap_or_default();
+    let proxy_url = store.proxy_url();
     tauri::async_runtime::spawn_blocking(move || {
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("skills-manager")
-            .build()
-            .map_err(AppError::network)?;
+        let client = skillssh_api::build_http_client(proxy_url.as_deref(), 15);
 
         let resp: serde_json::Value = client
             .get("https://api.github.com/repos/xingkongliang/skills-manager/releases/latest")
@@ -109,6 +123,57 @@ pub async fn check_app_update(app: tauri::AppHandle) -> Result<AppUpdateInfo, Ap
         })
     })
     .await?
+}
+
+#[tauri::command]
+pub async fn app_exit(app: tauri::AppHandle) {
+    let app_for_main = app.clone();
+    if let Err(err) = app.run_on_main_thread(move || crate::quit_app(&app_for_main)) {
+        log::error!("Failed to schedule app_exit on main thread: {err}");
+        crate::quit_app(&app);
+    }
+}
+
+#[tauri::command]
+pub async fn hide_to_tray(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<(), AppError> {
+    let show_tray_icon = {
+        let store = store.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let value = store.get_setting("show_tray_icon").map_err(AppError::db)?;
+            Ok::<bool, AppError>(match value
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+            {
+                Some(v) if matches!(v.as_str(), "false" | "0" | "no" | "off") => false,
+                _ => true,
+            })
+        })
+        .await??
+    };
+
+    if !show_tray_icon {
+        crate::quit_app(&app);
+        return Ok(());
+    }
+
+    window.hide().map_err(|e| AppError::io(e.to_string()))?;
+    // On macOS, avoid app.hide() (app-level hidden state can block restore in tray flow).
+    // Keep app running and hide only the window + Dock icon.
+    #[cfg(target_os = "macos")]
+    {
+        app.set_dock_visibility(false)
+            .map_err(|e| AppError::io(format!("Failed to hide Dock icon on macOS: {e}")))?;
+        app.set_activation_policy(tauri::ActivationPolicy::Accessory)
+            .map_err(|e| AppError::io(format!("Failed to set activation policy to Accessory: {e}")))?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    Ok(())
 }
 
 fn version_gt(a: &str, b: &str) -> bool {

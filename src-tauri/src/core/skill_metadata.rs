@@ -61,11 +61,61 @@ pub fn is_valid_skill_dir(dir: &Path) -> bool {
     dir.is_dir() && SKILL_DIR_MARKERS.iter().any(|name| dir.join(name).exists())
 }
 
+/// Characters that are invalid in Windows file/directory names.
+const WINDOWS_RESERVED: &[char] = &['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+
+/// Sanitize a skill name so it is safe to use as a single directory component
+/// on all major platforms (macOS, Linux, Windows).
+///
+/// Security-focused with cross-platform safety:
+/// - Strips path traversal (`../`) via `Path::file_name()`
+/// - Rejects bare `.` and `..`
+/// - Replaces control characters with `_` (preserves position for near-injectivity)
+/// - Replaces Windows-reserved characters (`<>:"/\|?*`) with `_`
+/// - Trims leading/trailing whitespace and dots (Windows rejects trailing dots)
+///
+/// Returns `None` if the result would be empty or unsafe.
+pub fn sanitize_skill_name(name: &str) -> Option<String> {
+    // Take only the last path component — strips any leading `../` sequences.
+    let last = std::path::Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())?;
+
+    // Reject bare `.` and `..` (file_name() returns None for `..` on most
+    // platforms, but be explicit for cross-platform safety).
+    if last == ".." || last == "." {
+        return None;
+    }
+
+    // Replace control characters and Windows-reserved characters with `_`.
+    // Using replacement instead of removal preserves character positions,
+    // making the mapping nearly injective (distinct inputs → distinct outputs).
+    let clean: String = last
+        .chars()
+        .map(|c| {
+            if c.is_control() || WINDOWS_RESERVED.contains(&c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    // Trim whitespace and trailing dots (Windows ignores trailing dots/spaces
+    // in directory names, which would cause silent mismatches).
+    let trimmed = clean.trim().trim_end_matches('.');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 pub fn infer_skill_name(dir: &Path) -> String {
     let meta = parse_skill_md(dir);
     if let Some(name) = meta.name {
-        if !name.is_empty() {
-            return name;
+        if let Some(sanitized) = sanitize_skill_name(&name) {
+            return sanitized;
         }
     }
     dir.file_name()
@@ -209,6 +259,86 @@ mod tests {
         let file = tmp.path().join("not-a-dir");
         fs::write(&file, "content").unwrap();
         assert!(!is_valid_skill_dir(&file));
+    }
+
+    // ── sanitize_skill_name ──
+
+    #[test]
+    fn sanitize_normal_name() {
+        assert_eq!(sanitize_skill_name("my-skill"), Some("my-skill".into()));
+    }
+
+    #[test]
+    fn sanitize_strips_path_traversal() {
+        assert_eq!(
+            sanitize_skill_name("../../../../.bashrc"),
+            Some(".bashrc".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_rejects_dotdot() {
+        assert_eq!(sanitize_skill_name(".."), None);
+        assert_eq!(sanitize_skill_name("."), None);
+    }
+
+    #[test]
+    fn sanitize_preserves_spaces_and_unicode() {
+        assert_eq!(
+            sanitize_skill_name("my skill (v2)"),
+            Some("my skill (v2)".into())
+        );
+        assert_eq!(
+            sanitize_skill_name("技能-测试"),
+            Some("技能-测试".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_distinct_inputs_produce_distinct_outputs() {
+        // "a b" and "a-b" must NOT collapse to the same name.
+        let a = sanitize_skill_name("a b");
+        let b = sanitize_skill_name("a-b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn sanitize_replaces_control_chars_with_underscore() {
+        // Replace rather than remove, so "a\x00b" → "a_b" not "ab"
+        assert_eq!(
+            sanitize_skill_name("a\x00b\x07c"),
+            Some("a_b_c".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_replaces_windows_reserved_chars() {
+        assert_eq!(
+            sanitize_skill_name("foo:bar*baz"),
+            Some("foo_bar_baz".into())
+        );
+        assert_eq!(
+            sanitize_skill_name("a<b>c"),
+            Some("a_b_c".into())
+        );
+    }
+
+    #[test]
+    fn sanitize_trims_whitespace_and_trailing_dots() {
+        assert_eq!(sanitize_skill_name("  foo  "), Some("foo".into()));
+        assert_eq!(sanitize_skill_name("bar..."), Some("bar".into()));
+    }
+
+    #[test]
+    fn sanitize_rejects_empty_after_cleaning() {
+        assert_eq!(sanitize_skill_name("   "), None);
+        assert_eq!(sanitize_skill_name("..."), None);
+    }
+
+    #[test]
+    fn sanitize_control_only_input_produces_underscores() {
+        // Control chars become `_`, not removed — so result is non-empty.
+        assert_eq!(sanitize_skill_name("\x00\x01"), Some("__".into()));
     }
 
     // ── infer_skill_name ──

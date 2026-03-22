@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { DragDropContext, Droppable, Draggable, type DropResult } from "@hello-pangea/dnd";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -9,6 +10,7 @@ import {
   Pencil,
   Trash2,
   FolderOpen,
+  GripVertical,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -31,6 +33,29 @@ export function Sidebar() {
   const [renameTarget, setRenameTarget] = useState<{ id: string; name: string; icon?: string | null } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<{ id: string; name: string } | null>(null);
+  const [orderedScenarios, setOrderedScenarios] = useState(scenarios);
+  const [orderedProjects, setOrderedProjects] = useState(projects);
+
+  useEffect(() => { setOrderedScenarios(scenarios); }, [scenarios]);
+  useEffect(() => { setOrderedProjects(projects); }, [projects]);
+
+  const handleDragEnd = async (result: DropResult) => {
+    if (!result.destination || result.destination.index === result.source.index) return;
+    const reordered = [...orderedScenarios];
+    const [moved] = reordered.splice(result.source.index, 1);
+    reordered.splice(result.destination.index, 0, moved);
+    setOrderedScenarios(reordered);
+    await api.reorderScenarios(reordered.map((s) => s.id));
+  };
+
+  const handleProjectDragEnd = async (result: DropResult) => {
+    if (!result.destination || result.destination.index === result.source.index) return;
+    const reordered = [...orderedProjects];
+    const [moved] = reordered.splice(result.source.index, 1);
+    reordered.splice(result.destination.index, 0, moved);
+    setOrderedProjects(reordered);
+    await api.reorderProjects(reordered.map((p) => p.id));
+  };
 
   const NAV_ITEMS = [
     { name: t("sidebar.dashboard"), path: "/", icon: LayoutDashboard },
@@ -153,71 +178,93 @@ export function Sidebar() {
           <div className="text-[13px] font-semibold text-muted mb-1.5 px-2.5 tracking-[0.1em] uppercase">
             {t("sidebar.scenarios")}
           </div>
-          <div className="space-y-0.5">
-            {scenarios.map((scenario) => {
-              const isActive = activeScenario?.id === scenario.id;
-              const scenarioIcon = getScenarioIconOption(scenario);
-              const ScenarioIcon = scenarioIcon.icon;
-              return (
+          <DragDropContext onDragEnd={handleDragEnd}>
+            <Droppable droppableId="scenarios">
+              {(droppableProvided) => (
                 <div
-                  key={scenario.id}
-                  className={cn(
-                    "group flex items-center gap-0.5 rounded-[5px] transition-colors",
-                    isActive ? "bg-surface-active" : "hover:bg-surface-hover"
-                  )}
+                  className="space-y-0.5"
+                  ref={droppableProvided.innerRef}
+                  {...droppableProvided.droppableProps}
                 >
-                  <button
-                    onClick={() => handleSwitchScenario(scenario.id)}
-                    className={cn(
-                      "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-[7px] text-left text-sm outline-none",
-                      isActive ? "font-medium text-primary" : "text-tertiary group-hover:text-secondary"
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded border",
-                        isActive
-                          ? `${scenarioIcon.activeClass} ${scenarioIcon.colorClass}`
-                          : "border-border bg-surface text-muted group-hover:border-border group-hover:text-tertiary"
-                      )}
-                    >
-                      <ScenarioIcon className="h-3 w-3" />
-                    </span>
-                    <span className="flex-1 truncate">{scenario.name}</span>
-                    {scenario.skill_count > 0 && (
-                      <span
-                        className={cn(
-                          "rounded-full px-1.5 text-[13px] font-medium leading-[18px]",
-                          isActive
-                            ? "bg-accent-bg text-accent-light"
-                            : "bg-surface-hover text-muted group-hover:bg-surface-active"
-                        )}
-                      >
-                        {scenario.skill_count}
-                      </span>
-                    )}
-                  </button>
+                  {orderedScenarios.map((scenario, index) => {
+                    const isActive = activeScenario?.id === scenario.id;
+                    const scenarioIcon = getScenarioIconOption(scenario);
+                    const ScenarioIcon = scenarioIcon.icon;
+                    return (
+                      <Draggable key={scenario.id} draggableId={scenario.id} index={index}>
+                        {(provided) => (
+                          <div
+                            ref={provided.innerRef}
+                            {...provided.draggableProps}
+                            className={cn(
+                              "group flex items-center gap-0.5 rounded-[5px] transition-colors",
+                              isActive ? "bg-surface-active" : "hover:bg-surface-hover"
+                            )}
+                          >
+                            <button
+                              onClick={() => handleSwitchScenario(scenario.id)}
+                              className={cn(
+                                "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-[7px] text-left text-sm outline-none",
+                                isActive ? "font-medium text-primary" : "text-tertiary group-hover:text-secondary"
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded border",
+                                  isActive
+                                    ? `${scenarioIcon.activeClass} ${scenarioIcon.colorClass}`
+                                    : "border-border bg-surface text-muted group-hover:border-border group-hover:text-tertiary"
+                                )}
+                              >
+                                <ScenarioIcon className="h-3 w-3" />
+                              </span>
+                              <span className="flex-1 truncate">{scenario.name}</span>
+                              {scenario.skill_count > 0 && (
+                                <span
+                                  className={cn(
+                                    "rounded-full px-1.5 text-[13px] font-medium leading-[18px]",
+                                    isActive
+                                      ? "bg-accent-bg text-accent-light"
+                                      : "bg-surface-hover text-muted group-hover:bg-surface-active"
+                                  )}
+                                >
+                                  {scenario.skill_count}
+                                </span>
+                              )}
+                            </button>
 
-                  <div className="mr-1.5 flex items-center opacity-0 transition group-hover:opacity-100">
-                    <button
-                      onClick={(event) => handleRenameClick(event, scenario)}
-                      className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-secondary"
-                      title={t("common.rename")}
-                    >
-                      <Pencil className="h-3 w-3" />
-                    </button>
-                    <button
-                      onClick={(event) => handleDeleteClick(event, scenario)}
-                      className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-red-400"
-                      title={t("common.delete")}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </div>
+                            <div className="mr-1.5 flex items-center opacity-0 transition group-hover:opacity-100">
+                              <div
+                                {...provided.dragHandleProps}
+                                className="rounded p-1 text-faint cursor-grab active:cursor-grabbing"
+                              >
+                                <GripVertical className="h-3 w-3" />
+                              </div>
+                              <button
+                                onClick={(event) => handleRenameClick(event, scenario)}
+                                className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-secondary"
+                                title={t("common.rename")}
+                              >
+                                <Pencil className="h-3 w-3" />
+                              </button>
+                              <button
+                                onClick={(event) => handleDeleteClick(event, scenario)}
+                                className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-red-400"
+                                title={t("common.delete")}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </Draggable>
+                    );
+                  })}
+                  {droppableProvided.placeholder}
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </Droppable>
+          </DragDropContext>
 
           <button
             onClick={() => setShowCreate(true)}
@@ -234,66 +281,88 @@ export function Sidebar() {
           <div className="text-[13px] font-semibold text-muted mb-1.5 px-2.5 tracking-[0.1em] uppercase">
             {t("sidebar.projects")}
           </div>
-          <div className="space-y-0.5">
-            {projects.map((project) => {
-              const isActive = location.pathname === `/project/${project.id}`;
-              return (
+          <DragDropContext onDragEnd={handleProjectDragEnd}>
+            <Droppable droppableId="projects">
+              {(droppableProvided) => (
                 <div
-                  key={project.id}
-                  className={cn(
-                    "group flex items-center gap-0.5 rounded-[5px] transition-colors",
-                    isActive ? "bg-surface-active" : "hover:bg-surface-hover"
-                  )}
+                  className="space-y-0.5"
+                  ref={droppableProvided.innerRef}
+                  {...droppableProvided.droppableProps}
                 >
-                  <button
-                    onClick={() => navigate(`/project/${project.id}`)}
-                    className={cn(
-                      "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-[7px] text-left text-sm outline-none",
-                      isActive ? "font-medium text-primary" : "text-tertiary group-hover:text-secondary"
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded border",
-                        isActive
-                          ? "border-blue-500/30 bg-blue-500/10 text-blue-500"
-                          : "border-border bg-surface text-muted group-hover:border-border group-hover:text-tertiary"
-                      )}
-                    >
-                      <FolderOpen className="h-3 w-3" />
-                    </span>
-                    <span className="flex-1 truncate">{project.name}</span>
-                    {project.skill_count > 0 && (
-                      <span
-                        className={cn(
-                          "rounded-full px-1.5 text-[13px] font-medium leading-[18px]",
-                          isActive
-                            ? "bg-accent-bg text-accent-light"
-                            : "bg-surface-hover text-muted group-hover:bg-surface-active"
-                        )}
-                      >
-                        {project.skill_count}
-                      </span>
-                    )}
-                  </button>
+                  {orderedProjects.map((project, index) => {
+                    const isActive = location.pathname === `/project/${project.id}`;
+                    return (
+                      <Draggable key={project.id} draggableId={project.id} index={index}>
+                        {(provided) => (
+                          <div
+                            ref={provided.innerRef}
+                            {...provided.draggableProps}
+                            className={cn(
+                              "group flex items-center gap-0.5 rounded-[5px] transition-colors",
+                              isActive ? "bg-surface-active" : "hover:bg-surface-hover"
+                            )}
+                          >
+                            <button
+                              onClick={() => navigate(`/project/${project.id}`)}
+                              className={cn(
+                                "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-[7px] text-left text-sm outline-none",
+                                isActive ? "font-medium text-primary" : "text-tertiary group-hover:text-secondary"
+                              )}
+                            >
+                              <span
+                                className={cn(
+                                  "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded border",
+                                  isActive
+                                    ? "border-blue-500/30 bg-blue-500/10 text-blue-500"
+                                    : "border-border bg-surface text-muted group-hover:border-border group-hover:text-tertiary"
+                                )}
+                              >
+                                <FolderOpen className="h-3 w-3" />
+                              </span>
+                              <span className="flex-1 truncate">{project.name}</span>
+                              {project.skill_count > 0 && (
+                                <span
+                                  className={cn(
+                                    "rounded-full px-1.5 text-[13px] font-medium leading-[18px]",
+                                    isActive
+                                      ? "bg-accent-bg text-accent-light"
+                                      : "bg-surface-hover text-muted group-hover:bg-surface-active"
+                                  )}
+                                >
+                                  {project.skill_count}
+                                </span>
+                              )}
+                            </button>
 
-                  <div className="mr-1.5 flex items-center opacity-0 transition group-hover:opacity-100">
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setDeleteProjectTarget(project);
-                      }}
-                      className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-red-400"
-                      title={t("common.delete")}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </div>
+                            <div className="mr-1.5 flex items-center opacity-0 transition group-hover:opacity-100">
+                              <div
+                                {...provided.dragHandleProps}
+                                className="rounded p-1 text-faint cursor-grab active:cursor-grabbing"
+                              >
+                                <GripVertical className="h-3 w-3" />
+                              </div>
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setDeleteProjectTarget(project);
+                                }}
+                                className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-red-400"
+                                title={t("common.delete")}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </Draggable>
+                    );
+                  })}
+                  {droppableProvided.placeholder}
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </Droppable>
+          </DragDropContext>
 
           <button
             onClick={() => setShowAddProject(true)}
