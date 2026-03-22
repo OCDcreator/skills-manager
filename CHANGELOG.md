@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-03-23
+
+### Added
+- Drag-and-drop reordering for scenarios and projects in sidebar
+- Git install preview dialog with backup sync
+- Dynamic overflow for source filter tags with popover popup
+- System tray menu improvements with scenario switcher
+
+### Fixed
+- Prevent skill install from overwriting existing skills; improved name collision detection
+- Preserve Unix file permissions when extracting ZIP archives
+- Security hardening: path traversal prevention, CSP improvements, input sanitization
+- Temp directory cleanup in git preview/install lifecycle
+- Source filter overflow robustness, accessibility, and layout fixes
 ## [1.7.0] - 2026-03-22
 
 ### Added
