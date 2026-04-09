@@ -91,7 +91,7 @@ function SortableSkillItem({ id, disabled, children }: SortableSkillItemProps) {
   ) : null;
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes}>
+    <div ref={setNodeRef} style={style} {...attributes} className="h-full">
       {children(handle)}
     </div>
   );
@@ -1090,7 +1090,7 @@ export function MySkills() {
                 {(dragHandle) => (
                 <div
                   className={cn(
-                    "app-panel group relative flex flex-col overflow-hidden transition-all hover:border-border hover:bg-surface-hover",
+                    "app-panel group relative flex h-full flex-col overflow-hidden transition-all hover:border-border hover:bg-surface-hover",
                     enabledInScenario && "border-l-2 border-l-accent",
                     isMultiSelect && "cursor-pointer",
                     isMultiSelect && selectedIds.has(skill.id) && "ring-1 ring-accent border-accent/40"

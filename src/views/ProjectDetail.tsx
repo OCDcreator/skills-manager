@@ -464,7 +464,7 @@ export function ProjectDetail() {
                 <div
                   key={skill.dir_name}
                   className={cn(
-                    "app-panel group relative flex flex-col overflow-hidden transition-all hover:border-border hover:bg-surface-hover",
+                    "app-panel group relative flex h-full flex-col overflow-hidden transition-all hover:border-border hover:bg-surface-hover",
                     skill.enabled && "border-l-2 border-l-accent",
                     !skill.enabled && "opacity-60",
                     isMultiSelect && "cursor-pointer",
