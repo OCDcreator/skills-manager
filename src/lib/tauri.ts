@@ -115,6 +115,9 @@ export interface Project {
   id: string;
   name: string;
   path: string;
+  workspace_type: "project" | "linked";
+  linked_agent_name: string | null;
+  supports_skill_toggle: boolean;
   sort_order: number;
   skill_count: number;
   sync_health: SyncHealth;
@@ -472,20 +475,27 @@ export const getProjects = () => invoke<Project[]>("get_projects");
 export const addProject = (path: string) =>
   invoke<Project>("add_project", { path });
 
+export const addLinkedWorkspace = (name: string, path: string, disabledPath?: string) =>
+  invoke<Project>("add_linked_workspace", {
+    name,
+    path,
+    disabledPath: disabledPath ?? null,
+  });
+
 export const removeProject = (id: string) =>
   invoke<void>("remove_project", { id });
 
 export const scanProjects = (root: string) =>
   invoke<string[]>("scan_projects", { root });
 
-export const getProjectAgentTargets = () =>
-  invoke<ProjectAgentTarget[]>("get_project_agent_targets");
+export const getProjectAgentTargets = (projectId: string) =>
+  invoke<ProjectAgentTarget[]>("get_project_agent_targets", { projectId });
 
 export const getProjectSkills = (projectId: string) =>
   invoke<ProjectSkill[]>("get_project_skills", { projectId });
 
-export const getProjectSkillDocument = (projectPath: string, skillRelativePath: string, agent: string) =>
-  invoke<ProjectSkillDocument>("get_project_skill_document", { projectPath, skillRelativePath, agent });
+export const getProjectSkillDocument = (projectId: string, skillRelativePath: string, agent: string) =>
+  invoke<ProjectSkillDocument>("get_project_skill_document", { projectId, skillRelativePath, agent });
 
 export const importProjectSkillToCenter = (projectId: string, skillRelativePath: string, agent: string) =>
   invoke<void>("import_project_skill_to_center", { projectId, skillRelativePath, agent });

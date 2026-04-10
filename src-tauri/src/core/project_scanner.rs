@@ -71,6 +71,33 @@ pub fn read_project_skills(
     skills
 }
 
+pub fn read_linked_workspace_skills(
+    skills_root: &Path,
+    disabled_root: Option<&Path>,
+    agent_key: &str,
+    agent_display_name: &str,
+) -> Vec<ProjectSkillInfo> {
+    let mut skills = Vec::new();
+    read_skills_from_dir(
+        skills_root,
+        true,
+        agent_key,
+        agent_display_name,
+        &mut skills,
+    );
+    if let Some(disabled_root) = disabled_root {
+        read_skills_from_dir(
+            disabled_root,
+            false,
+            agent_key,
+            agent_display_name,
+            &mut skills,
+        );
+    }
+    skills.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    skills
+}
+
 fn read_skills_from_dir(
     dir: &Path,
     enabled: bool,

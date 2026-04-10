@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 3;
+const LATEST_VERSION: u32 = 4;
 
 /// Run all pending migrations on the database.
 ///
@@ -50,6 +50,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         0 => migrate_v0_to_v1(conn),
         1 => migrate_v1_to_v2(conn),
         2 => migrate_v2_to_v3(conn),
+        3 => migrate_v3_to_v4(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -154,6 +155,10 @@ fn migrate_v0_to_v1(conn: &Connection) -> Result<()> {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             path TEXT NOT NULL UNIQUE,
+            workspace_type TEXT NOT NULL DEFAULT 'project',
+            linked_agent_key TEXT,
+            linked_agent_name TEXT,
+            disabled_path TEXT,
             sort_order INTEGER DEFAULT 0,
             created_at INTEGER,
             updated_at INTEGER
@@ -202,6 +207,36 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
 /// v2 → v3: Add sort_order to scenario_skills for drag-and-drop reordering.
 fn migrate_v2_to_v3(conn: &Connection) -> Result<()> {
     add_column_if_missing(conn, "scenario_skills", "sort_order", "INTEGER DEFAULT 0")?;
+    Ok(())
+}
+
+/// v3 → v4: Expand projects into generic workspace records.
+fn migrate_v3_to_v4(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            workspace_type TEXT NOT NULL DEFAULT 'project',
+            linked_agent_key TEXT,
+            linked_agent_name TEXT,
+            disabled_path TEXT,
+            sort_order INTEGER DEFAULT 0,
+            created_at INTEGER,
+            updated_at INTEGER
+        );
+        ",
+    )?;
+    add_column_if_missing(
+        conn,
+        "projects",
+        "workspace_type",
+        "TEXT NOT NULL DEFAULT 'project'",
+    )?;
+    add_column_if_missing(conn, "projects", "linked_agent_key", "TEXT")?;
+    add_column_if_missing(conn, "projects", "linked_agent_name", "TEXT")?;
+    add_column_if_missing(conn, "projects", "disabled_path", "TEXT")?;
     Ok(())
 }
 

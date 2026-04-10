@@ -11,6 +11,7 @@ import {
   Trash2,
   FolderOpen,
   GripVertical,
+  Link2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -360,11 +361,15 @@ export function Sidebar() {
                                 className={cn(
                                   "flex h-[20px] w-[20px] shrink-0 items-center justify-center rounded border",
                                   isActive
-                                    ? "border-blue-500/30 bg-blue-500/10 text-blue-500"
+                                    ? project.workspace_type === "linked"
+                                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
+                                      : "border-blue-500/30 bg-blue-500/10 text-blue-500"
                                     : "border-border bg-surface text-muted group-hover:border-border group-hover:text-tertiary"
                                 )}
                               >
-                                <FolderOpen className="h-3 w-3" />
+                                {project.workspace_type === "linked"
+                                  ? <Link2 className="h-3 w-3" />
+                                  : <FolderOpen className="h-3 w-3" />}
                               </span>
                               <span className="flex-1 truncate">{project.name}</span>
                               <span className="ml-auto flex h-[18px] w-[52px] shrink-0 items-center justify-end gap-2 group-hover:hidden">
@@ -479,7 +484,7 @@ export function Sidebar() {
         onClose={() => setShowAddProject(false)}
         onAdded={async () => {
           await refreshProjects();
-          toast.success(t("project.added"));
+          toast.success(t("project.workspaceAdded"));
         }}
       />
 

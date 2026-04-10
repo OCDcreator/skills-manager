@@ -24,6 +24,22 @@ fn collect_watch_paths(store: &SkillStore) -> Vec<PathBuf> {
         let adapters = tool_adapters::all_tool_adapters(store);
         let mut seen_dirs = std::collections::HashSet::new();
         for project in projects {
+            if project.workspace_type == "linked" {
+                let skills_dir = PathBuf::from(&project.path);
+                if let Some(parent) = skills_dir.parent() {
+                    paths.push(parent.to_path_buf());
+                }
+                paths.push(skills_dir);
+                if let Some(disabled_path) = project.disabled_path {
+                    let disabled_dir = PathBuf::from(disabled_path);
+                    if let Some(parent) = disabled_dir.parent() {
+                        paths.push(parent.to_path_buf());
+                    }
+                    paths.push(disabled_dir);
+                }
+                continue;
+            }
+
             let project_path = PathBuf::from(&project.path);
             seen_dirs.clear();
             for adapter in &adapters {
