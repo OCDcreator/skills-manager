@@ -194,8 +194,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
                     // Navigate to My Skills without opening a specific detail panel.
                     // AppProvider is outside Router, so use pushState + popstate
                     // to preserve SPA state.
-                    if (!window.location.pathname.endsWith("/my-skills")) {
-                      window.history.pushState(null, "", "/my-skills");
+                    const target = "/my-skills?filter=updates";
+                    if (`${window.location.pathname}${window.location.search}` !== target) {
+                      window.history.pushState(null, "", target);
                       window.dispatchEvent(new PopStateEvent("popstate"));
                     }
                   },

@@ -1282,20 +1282,27 @@ fn check_skill_update_internal(
             {
                 let local_hash =
                     content_hash::hash_directory(&workspace_source.skill_dir).map_err(AppError::io)?;
-                let revision_changed =
-                    skill.source_revision.as_deref() != Some(workspace_source.revision.as_str());
                 let content_changed = skill.content_hash.as_deref() != Some(local_hash.as_str());
-                let update_status = if revision_changed || content_changed {
-                    "update_available"
-                } else {
-                    "up_to_date"
-                };
+
+                store
+                    .update_skill_source_metadata(
+                        &skill.id,
+                        skill.source_ref_resolved.as_deref(),
+                        skill.source_subpath.as_deref(),
+                        skill.source_branch.as_deref(),
+                        Some(&workspace_source.revision),
+                    )
+                    .map_err(AppError::db)?;
 
                 store
                     .update_skill_check_state(
                         &skill.id,
                         Some(&workspace_source.revision),
-                        update_status,
+                        if content_changed {
+                            "update_available"
+                        } else {
+                            "up_to_date"
+                        },
                         None,
                     )
                     .map_err(AppError::db)?;
@@ -1374,9 +1381,9 @@ fn should_skip_update_check(
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(60);
     let ttl_ms = ttl_minutes * 60 * 1000;
-    let stable_status = !matches!(
+    let stable_status = matches!(
         skill.update_status.as_str(),
-        "unknown" | "checking" | "updating" | "error"
+        "up_to_date" | "local_only" | "source_missing"
     );
 
     Ok(stable_status

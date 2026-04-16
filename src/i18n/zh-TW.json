@@ -171,20 +171,26 @@
       "checkAll": "檢查全部",
       "checkedAll": "已檢查全部 Skill 更新",
       "update": "更新",
+      "updateAll": "更新全部",
+      "updatingAll": "更新中…",
       "updated": "Skill 已更新",
+      "updatedBatch": "已更新 {{count}} 個 Skill",
       "reimport": "重新匯入",
       "reimported": "Skill 已重新匯入",
       "relink": "重新關聯",
       "relinked": "已重新關聯原路徑",
       "detachSource": "轉為本機副本",
       "detachedSource": "已取消原路徑追蹤",
-      "alreadyUpToDate": "Skill 內容未變化（版本已同步）"
+      "alreadyUpToDate": "Skill 內容未變化（版本已同步）",
+      "unchangedBatch": "{{count}} 個 Skill 無需變更",
+      "failedBatch": "{{count}} 個 Skill 更新失敗"
     },
     "gitConfigEntry": "同步設定",
     "filters": {
       "all": "全部",
       "enabled": "當前場景已啟用",
-      "available": "當前場景未啟用"
+      "available": "當前場景未啟用",
+      "updates": "有更新"
     },
     "sourceFilter": {
       "all": "全部來源",

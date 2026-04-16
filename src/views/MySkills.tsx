@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
@@ -64,6 +65,14 @@ import { CSS } from "@dnd-kit/utilities";
 
 const MY_SKILLS_WORKSPACE_SETTING_KEY = "my_skills_workspace_path";
 const TAG_CATEGORY_ORDER = ["场景:", "来源:", "仓库:", "用途:", "集合:", "风险:"];
+type FilterMode = "all" | "enabled" | "available" | "updates";
+
+function normalizeFilterMode(value: string | null): FilterMode {
+  if (value === "enabled" || value === "available" || value === "updates") {
+    return value;
+  }
+  return "all";
+}
 
 function tagCategory(tag: string) {
   return TAG_CATEGORY_ORDER.find((prefix) => tag.startsWith(prefix)) ?? "其他";
@@ -179,6 +188,7 @@ function displaySnapshotLabel(tag: string) {
 
 export function MySkills() {
   const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     activeScenario,
     tools,
@@ -190,7 +200,7 @@ export function MySkills() {
     closeSkillDetail,
   } = useApp();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
-  const [filterMode, setFilterMode] = useState<"all" | "enabled" | "available">("all");
+  const [filterMode, setFilterMode] = useState<FilterMode>(() => normalizeFilterMode(searchParams.get("filter")));
   const [sourceFilters, setSourceFilters] = useState<Set<string>>(new Set());
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -198,6 +208,7 @@ export function MySkills() {
   const [deleteTarget, setDeleteTarget] = useState<ManagedSkill | null>(null);
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
   const [checkingAll, setCheckingAll] = useState(false);
+  const [updatingAll, setUpdatingAll] = useState(false);
   const [checkingSkillId, setCheckingSkillId] = useState<string | null>(null);
   const [updatingSkillId, setUpdatingSkillId] = useState<string | null>(null);
   const [toolToggles, setToolToggles] = useState<SkillToolToggle[] | null>(null);
@@ -270,11 +281,29 @@ export function MySkills() {
     refreshAllTags();
   }, [skills]);
 
+  useEffect(() => {
+    const nextMode = normalizeFilterMode(searchParams.get("filter"));
+    setFilterMode((current) => (current === nextMode ? current : nextMode));
+  }, [searchParams]);
+
   const toggleFilter = (set: Set<string>, value: string): Set<string> => {
     const next = new Set(set);
     if (next.has(value)) next.delete(value);
     else next.add(value);
     return next;
+  };
+
+  const handleFilterModeChange = (mode: FilterMode) => {
+    setFilterMode(mode);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (mode === "all") {
+        next.delete("filter");
+      } else {
+        next.set("filter", mode);
+      }
+      return next;
+    }, { replace: true });
   };
 
   const filtered = useMemo(() => {
@@ -287,6 +316,8 @@ export function MySkills() {
       if (sourceFilters.size > 0 && !sourceFilters.has(skill.source_type)) return false;
 
       if (tagFilters.size > 0 && !skill.tags.some((t) => tagFilters.has(t))) return false;
+
+      if (filterMode === "updates") return skill.update_status === "update_available";
 
       if (!activeScenario) return true;
 
@@ -670,23 +701,52 @@ export function MySkills() {
   const handleRefreshSkill = async (skill: ManagedSkill) => {
     setUpdatingSkillId(skill.id);
     try {
-      if (skill.source_type === "local" || skill.source_type === "import") {
-        await api.reimportLocalSkill(skill.id);
-        toast.success(t("mySkills.updateActions.reimported"));
-      } else {
-        const result = await api.updateSkill(skill.id);
-        if (result.content_changed) {
-          toast.success(t("mySkills.updateActions.updated"));
-        } else {
-          toast.info(t("mySkills.updateActions.alreadyUpToDate"));
-        }
-      }
+      await updateSkillInternal(skill, true);
       await refreshManagedSkills();
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, t("common.error")));
       await refreshManagedSkills();
     } finally {
       setUpdatingSkillId(null);
+    }
+  };
+
+  const handleUpdateAllAvailable = async () => {
+    if (updatableFilteredSkills.length === 0) return;
+
+    let updated = 0;
+    let unchanged = 0;
+    let failed = 0;
+
+    setUpdatingAll(true);
+    try {
+      for (const skill of updatableFilteredSkills) {
+        setUpdatingSkillId(skill.id);
+        try {
+          const outcome = await updateSkillInternal(skill, false);
+          if (outcome === "updated") {
+            updated += 1;
+          } else {
+            unchanged += 1;
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+
+      if (updated > 0) {
+        toast.success(t("mySkills.updateActions.updatedBatch", { count: updated }));
+      }
+      if (unchanged > 0) {
+        toast.info(t("mySkills.updateActions.unchangedBatch", { count: unchanged }));
+      }
+      if (failed > 0) {
+        toast.error(t("mySkills.updateActions.failedBatch", { count: failed }));
+      }
+    } finally {
+      setUpdatingSkillId(null);
+      setUpdatingAll(false);
+      await refreshManagedSkills();
     }
   };
 
@@ -987,6 +1047,31 @@ export function MySkills() {
       ? t("mySkills.updateActions.reimport")
       : t("mySkills.updateActions.update");
 
+  const updatableFilteredSkills = useMemo(
+    () => filtered.filter((skill) => skill.update_status === "update_available"),
+    [filtered]
+  );
+
+  const updateSkillInternal = async (skill: ManagedSkill, showToast: boolean) => {
+    if (skill.source_type === "local" || skill.source_type === "import") {
+      await api.reimportLocalSkill(skill.id);
+      if (showToast) {
+        toast.success(t("mySkills.updateActions.reimported"));
+      }
+      return "updated" as const;
+    }
+
+    const result = await api.updateSkill(skill.id);
+    if (showToast) {
+      if (result.content_changed) {
+        toast.success(t("mySkills.updateActions.updated"));
+      } else {
+        toast.info(t("mySkills.updateActions.alreadyUpToDate"));
+      }
+    }
+    return result.content_changed ? ("updated" as const) : ("unchanged" as const);
+  };
+
   const statusBadge = (skill: ManagedSkill) => {
     if (skill.update_status === "update_available") {
       return {
@@ -1072,10 +1157,10 @@ export function MySkills() {
           </div>
 
           <div className="app-segmented">
-            {(["all", "enabled", "available"] as const).map((mode) => (
+            {(["all", "enabled", "available", "updates"] as const).map((mode) => (
               <button
                 key={mode}
-                onClick={() => setFilterMode(mode)}
+                onClick={() => handleFilterModeChange(mode)}
                 className={cn(
                   "app-segmented-button",
                   filterMode === mode && "app-segmented-button-active"
@@ -1139,11 +1224,21 @@ export function MySkills() {
           )}
           <button
             onClick={handleCheckAllUpdates}
-            disabled={checkingAll}
+            disabled={checkingAll || updatingAll}
             className="ml-2 mr-2 inline-flex items-center gap-1 rounded-md border-l border-border-subtle pl-4 pr-3 py-2 text-[13px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
           >
             <RefreshCw className={cn("h-3.5 w-3.5", checkingAll && "animate-spin")} />
             {t("mySkills.updateActions.checkAll")}
+          </button>
+          <button
+            onClick={handleUpdateAllAvailable}
+            disabled={checkingAll || updatingAll || updatableFilteredSkills.length === 0}
+            className="mr-2 inline-flex items-center gap-1 rounded-md px-3 py-2 text-[13px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
+          >
+            <RotateCcw className={cn("h-3.5 w-3.5", updatingAll && "animate-spin")} />
+            {updatingAll
+              ? t("mySkills.updateActions.updatingAll")
+              : t("mySkills.updateActions.updateAll")}
           </button>
           <button
             onClick={() => setViewMode("grid")}
@@ -1471,7 +1566,7 @@ export function MySkills() {
                     {canRefresh(skill) ? (
                       <button
                         onClick={() => handleRefreshSkill(skill)}
-                        disabled={updatingSkillId === skill.id}
+                        disabled={updatingAll || updatingSkillId === skill.id}
                         className="rounded p-1 text-accent-light transition-colors hover:bg-accent-bg disabled:opacity-50"
                         title={refreshLabel(skill)}
                       >
@@ -1524,14 +1619,14 @@ export function MySkills() {
                           <>
                             <button
                               onClick={() => handleRelinkSource(skill)}
-                              disabled={updatingSkillId === skill.id}
+                              disabled={updatingAll || updatingSkillId === skill.id}
                               className="rounded-full border border-border-subtle px-2 py-0.5 text-[12px] font-medium text-secondary transition-colors hover:bg-surface-hover disabled:opacity-50"
                             >
                               {t("mySkills.updateActions.relink")}
                             </button>
                             <button
                               onClick={() => handleDetachSource(skill)}
-                              disabled={updatingSkillId === skill.id}
+                              disabled={updatingAll || updatingSkillId === skill.id}
                               className="rounded-full border border-border-subtle px-2 py-0.5 text-[12px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
                             >
                               {t("mySkills.updateActions.detachSource")}
@@ -1718,14 +1813,14 @@ export function MySkills() {
                     <>
                       <button
                         onClick={() => handleRelinkSource(skill)}
-                        disabled={updatingSkillId === skill.id}
+                        disabled={updatingAll || updatingSkillId === skill.id}
                         className="rounded px-2 py-0.5 text-[13px] font-medium text-secondary transition-colors hover:bg-surface-hover disabled:opacity-50"
                       >
                         {t("mySkills.updateActions.relink")}
                       </button>
                       <button
                         onClick={() => handleDetachSource(skill)}
-                        disabled={updatingSkillId === skill.id}
+                        disabled={updatingAll || updatingSkillId === skill.id}
                         className="rounded px-2 py-0.5 text-[13px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
                       >
                         {t("mySkills.updateActions.detachSource")}
@@ -1755,7 +1850,7 @@ export function MySkills() {
                   {canRefresh(skill) ? (
                     <button
                       onClick={() => handleRefreshSkill(skill)}
-                      disabled={updatingSkillId === skill.id}
+                      disabled={updatingAll || updatingSkillId === skill.id}
                       className="rounded p-0.5 text-accent-light transition-colors hover:bg-accent-bg disabled:opacity-50"
                       title={refreshLabel(skill)}
                     >

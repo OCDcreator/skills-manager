@@ -190,20 +190,26 @@
       "checkAll": "Check All",
       "checkedAll": "Checked all skill updates",
       "update": "Update",
+      "updateAll": "Update All",
+      "updatingAll": "Updating…",
       "updated": "Skill updated",
+      "updatedBatch": "Updated {{count}} skill(s)",
       "reimport": "Reimport",
       "reimported": "Skill reimported",
       "relink": "Relink",
       "relinked": "Source path relinked",
       "detachSource": "Keep local copy",
       "detachedSource": "Source tracking removed",
-      "alreadyUpToDate": "Skill content unchanged (version synced)"
+      "alreadyUpToDate": "Skill content unchanged (version synced)",
+      "unchangedBatch": "{{count}} skill(s) needed no content changes",
+      "failedBatch": "{{count}} skill(s) failed to update"
     },
     "gitConfigEntry": "Sync Config",
     "filters": {
       "all": "All",
       "enabled": "Enabled",
-      "available": "Available"
+      "available": "Available",
+      "updates": "Updates"
     },
     "sourceFilter": {
       "all": "All Sources",
