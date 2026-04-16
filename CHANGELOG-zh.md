@@ -5,6 +5,10 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.13.4] - 2026-04-16
+
+### 变更
+- 为 `OCDcreator/skills-manager` fork 配置了发布更新源和签名信息，使 GitHub Actions 构建产物与应用内更新都指向当前仓库
 ## [1.13.3] - 2026-04-11
 
 ### 变更
