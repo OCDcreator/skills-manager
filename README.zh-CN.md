@@ -97,6 +97,8 @@ Cursor · Claude Code · Codex · OpenCode · Amp · Kilo Code · Roo Code · Go
 
 ### 开发
 
+> 说明：此仓库是 `xingkongliang/skills-manager` 的 fork。本地 `origin` 可能指向你的 fork，而不是上游主仓库；在对比或同步上游变更时，建议额外配置并使用 `upstream` remote。
+
 ```bash
 npm install
 npm run tauri:dev

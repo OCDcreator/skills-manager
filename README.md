@@ -111,6 +111,8 @@ The **Help** button in **Settings** mirrors the current product flow: scenarios,
 
 ### Development
 
+> Note: this repository is a fork of `xingkongliang/skills-manager`. Your local `origin` may point to the fork rather than the canonical upstream repo, so add/use an `upstream` remote when comparing or syncing changes.
+
 ```bash
 npm install
 npm run tauri:dev
