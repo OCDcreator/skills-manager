@@ -63,6 +63,21 @@ pub struct ScenarioDto {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ScenarioAgentUsageDto {
+    pub key: String,
+    pub display_name: String,
+    pub skill_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ScenarioAgentSummaryDto {
+    pub scenario_id: String,
+    pub configured_count: usize,
+    pub available_count: usize,
+    pub agents: Vec<ScenarioAgentUsageDto>,
+}
+
 #[tauri::command]
 pub async fn get_scenarios(
     store: State<'_, Arc<SkillStore>>,
@@ -87,6 +102,15 @@ pub async fn get_scenarios(
         Ok(result)
     })
     .await?
+}
+
+#[tauri::command]
+pub async fn get_scenario_agent_summary(
+    scenario_id: String,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<ScenarioAgentSummaryDto, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || scenario_agent_summary(&store, &scenario_id)).await?
 }
 
 #[tauri::command]
@@ -485,4 +509,49 @@ pub(crate) fn unsync_scenario_skills(
     }
 
     Ok(())
+}
+
+fn scenario_agent_summary(
+    store: &SkillStore,
+    scenario_id: &str,
+) -> Result<ScenarioAgentSummaryDto, AppError> {
+    ensure_scenario_exists(store, scenario_id)?;
+
+    let available_adapters = tool_adapters::enabled_installed_adapters(store);
+    let skills = store
+        .get_skills_for_scenario(scenario_id)
+        .map_err(AppError::db)?;
+
+    let mut usage_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for skill in &skills {
+        let adapters = enabled_installed_adapters_for_scenario_skill(store, scenario_id, &skill.id)?;
+        let mut seen_for_skill = HashSet::new();
+        for adapter in adapters {
+            if seen_for_skill.insert(adapter.key.clone()) {
+                *usage_counts.entry(adapter.key).or_default() += 1;
+            }
+        }
+    }
+
+    let agents = available_adapters
+        .into_iter()
+        .filter_map(|adapter| {
+            usage_counts
+                .get(&adapter.key)
+                .copied()
+                .map(|skill_count| ScenarioAgentUsageDto {
+                    key: adapter.key,
+                    display_name: adapter.display_name,
+                    skill_count,
+                })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(ScenarioAgentSummaryDto {
+        scenario_id: scenario_id.to_string(),
+        configured_count: agents.len(),
+        available_count: tool_adapters::enabled_installed_adapters(store).len(),
+        agents,
+    })
 }

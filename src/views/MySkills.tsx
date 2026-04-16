@@ -21,6 +21,7 @@ import {
   SquareCheck,
   Square,
   GripVertical,
+  FolderOpen,
 } from "lucide-react";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
@@ -34,10 +35,13 @@ import { MultiSelectToolbar } from "../components/MultiSelectToolbar";
 import * as api from "../lib/tauri";
 import type {
   ManagedSkill,
+  ScenarioAgentSummary,
   ToolInfo,
   GitBackupStatus,
   GitBackupVersion,
   SkillToolToggle,
+  MySkillsWorkspaceAction,
+  MySkillsWorkspaceStatus,
 } from "../lib/tauri";
 import { getErrorMessage, getErrorKind } from "../lib/error";
 import {
@@ -57,6 +61,67 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+
+const MY_SKILLS_WORKSPACE_SETTING_KEY = "my_skills_workspace_path";
+const TAG_CATEGORY_ORDER = ["场景:", "来源:", "仓库:", "用途:", "集合:", "风险:"];
+
+function tagCategory(tag: string) {
+  return TAG_CATEGORY_ORDER.find((prefix) => tag.startsWith(prefix)) ?? "其他";
+}
+
+function sortTagsByCategory(tags: string[]) {
+  return [...tags].sort((a, b) => {
+    const aCategory = tagCategory(a);
+    const bCategory = tagCategory(b);
+    const aIndex = TAG_CATEGORY_ORDER.indexOf(aCategory);
+    const bIndex = TAG_CATEGORY_ORDER.indexOf(bCategory);
+    const normalizedA = aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex;
+    const normalizedB = bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex;
+
+    if (normalizedA !== normalizedB) {
+      return normalizedA - normalizedB;
+    }
+
+    return a.localeCompare(b, "zh-Hans-CN");
+  });
+}
+
+function tagToneClasses(tag: string, active = false) {
+  const category = tagCategory(tag);
+  const tones: Record<string, { idle: string; active: string }> = {
+    "场景:": {
+      idle: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+      active: "bg-emerald-500 text-white dark:bg-emerald-500",
+    },
+    "来源:": {
+      idle: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+      active: "bg-amber-500 text-white dark:bg-amber-500",
+    },
+    "仓库:": {
+      idle: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
+      active: "bg-blue-500 text-white dark:bg-blue-500",
+    },
+    "用途:": {
+      idle: "bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-400",
+      active: "bg-fuchsia-500 text-white dark:bg-fuchsia-500",
+    },
+    "集合:": {
+      idle: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
+      active: "bg-cyan-500 text-white dark:bg-cyan-500",
+    },
+    "风险:": {
+      idle: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
+      active: "bg-rose-500 text-white dark:bg-rose-500",
+    },
+    "其他": {
+      idle: "bg-surface-hover text-muted",
+      active: "bg-accent text-white dark:bg-accent",
+    },
+  };
+
+  const tone = tones[category] ?? tones["其他"];
+  return active ? tone.active : tone.idle;
+}
 
 interface SortableSkillItemProps {
   id: string;
@@ -145,6 +210,12 @@ export function MySkills() {
   const [gitVersions, setGitVersions] = useState<GitBackupVersion[]>([]);
   const [restoreVersionTag, setRestoreVersionTag] = useState<string | null>(null);
   const [restoringVersionTag, setRestoringVersionTag] = useState<string | null>(null);
+  const [scenarioAgentSummary, setScenarioAgentSummary] = useState<ScenarioAgentSummary | null>(null);
+  const [mySkillsWorkspaceStatus, setMySkillsWorkspaceStatus] = useState<MySkillsWorkspaceStatus | null>(null);
+  const [mySkillsWorkspacePath, setMySkillsWorkspacePath] = useState("");
+  const [mySkillsWorkspaceSaving, setMySkillsWorkspaceSaving] = useState(false);
+  const [mySkillsWorkspaceAction, setMySkillsWorkspaceAction] = useState<MySkillsWorkspaceAction | null>(null);
+  const [mySkillsWorkspaceConfirm, setMySkillsWorkspaceConfirm] = useState<MySkillsWorkspaceAction | null>(null);
   const [tagEditSkillId, setTagEditSkillId] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState("");
   const tagInputRef = useRef<HTMLInputElement>(null);
@@ -160,6 +231,30 @@ export function MySkills() {
       return;
     }
     api.getScenarioSkillOrder(activeScenario.id).then(setScenarioSkillOrder).catch(() => {});
+  }, [activeScenario, skills]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeScenario) {
+      setScenarioAgentSummary(null);
+      return;
+    }
+
+    api.getScenarioAgentSummary(activeScenario.id)
+      .then((summary) => {
+        if (!cancelled) {
+          setScenarioAgentSummary(summary);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setScenarioAgentSummary(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeScenario, skills]);
 
   const refreshAllTags = async () => {
@@ -219,6 +314,8 @@ export function MySkills() {
 
     return result;
   }, [skills, search, sourceFilters, tagFilters, filterMode, activeScenario, scenarioSkillOrder]);
+
+  const sortedAllTags = useMemo(() => sortTagsByCategory(allTags), [allTags]);
 
   const {
     isMultiSelect, setIsMultiSelect,
@@ -323,6 +420,15 @@ export function MySkills() {
     }
   }, []);
 
+  const refreshMySkillsWorkspaceStatus = useCallback(async () => {
+    try {
+      const status = await api.getMySkillsWorkspaceStatus();
+      setMySkillsWorkspaceStatus(status);
+    } catch {
+      // not critical
+    }
+  }, []);
+
   const refreshGitVersions = useCallback(async () => {
     if (!gitStatus?.is_repo) {
       setGitVersions([]);
@@ -359,12 +465,32 @@ export function MySkills() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [status, savedPath] = await Promise.all([
+        api.getMySkillsWorkspaceStatus().catch(() => null),
+        api.getSettings(MY_SKILLS_WORKSPACE_SETTING_KEY).catch(() => null),
+      ]);
+      if (cancelled) return;
+      if (status) {
+        setMySkillsWorkspaceStatus(status);
+      }
+      setMySkillsWorkspacePath((savedPath?.trim() || status?.path || "").trim());
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const handleWindowFocus = () => {
       refreshGitStatus();
+      refreshMySkillsWorkspaceStatus();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         refreshGitStatus();
+        refreshMySkillsWorkspaceStatus();
       }
     };
 
@@ -374,14 +500,15 @@ export function MySkills() {
       window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [refreshGitStatus]);
+  }, [refreshGitStatus, refreshMySkillsWorkspaceStatus]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       refreshGitStatus();
+      refreshMySkillsWorkspaceStatus();
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [skills, refreshGitStatus]);
+  }, [skills, refreshGitStatus, refreshMySkillsWorkspaceStatus]);
 
   useEffect(() => {
     if (gitVersionsOpen && gitStatus?.is_repo) {
@@ -623,11 +750,72 @@ export function MySkills() {
 
   const getTagOptions = (skill: ManagedSkill, keyword: string) => {
     const needle = keyword.trim().toLowerCase();
-    return allTags.filter((tag) => {
+    return sortTagsByCategory(allTags.filter((tag) => {
       if (skill.tags.includes(tag)) return false;
       if (!needle) return true;
       return tag.toLowerCase().includes(needle);
-    });
+    }));
+  };
+
+  const mySkillsActionLabel = (action: MySkillsWorkspaceAction) =>
+    t(`mySkills.myRepo.actions.${action}`);
+
+  const handleBrowseMySkillsWorkspace = async () => {
+    const selected = await dialogOpen({ directory: true, multiple: false });
+    if (!selected || Array.isArray(selected)) return;
+    setMySkillsWorkspacePath(selected);
+  };
+
+  const handleSaveMySkillsWorkspacePath = async () => {
+    setMySkillsWorkspaceSaving(true);
+    try {
+      const trimmed = mySkillsWorkspacePath.trim();
+      await api.setSettings(MY_SKILLS_WORKSPACE_SETTING_KEY, trimmed);
+      const status = await api.getMySkillsWorkspaceStatus();
+      setMySkillsWorkspaceStatus(status);
+      setMySkillsWorkspacePath(trimmed || status.path || "");
+      toast.success(t("mySkills.myRepo.pathSaved"));
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+    } finally {
+      setMySkillsWorkspaceSaving(false);
+    }
+  };
+
+  const handleRunMySkillsWorkspaceAction = async (action: MySkillsWorkspaceAction) => {
+    setMySkillsWorkspaceAction(action);
+    try {
+      const result = await api.runMySkillsWorkspaceAction(action);
+      await Promise.all([
+        refreshManagedSkills(),
+        refreshScenarios(),
+        refreshMySkillsWorkspaceStatus(),
+      ]);
+
+      const actionLabel = mySkillsActionLabel(action);
+      if (result.status === "partial") {
+        toast.warning(
+          result.detail || t("mySkills.myRepo.actionPartial", { action: actionLabel })
+        );
+      } else if (result.status === "no_changes") {
+        toast.info(
+          result.detail || t("mySkills.myRepo.actionNoChanges", { action: actionLabel })
+        );
+      } else {
+        toast.success(
+          t("mySkills.myRepo.actionSuccess", {
+            action: actionLabel,
+            count: result.refreshed_skills,
+          })
+        );
+      }
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+      await refreshMySkillsWorkspaceStatus();
+    } finally {
+      setMySkillsWorkspaceAction(null);
+      setMySkillsWorkspaceConfirm(null);
+    }
   };
 
   const handleGitStartBackup = async () => {
@@ -821,15 +1009,50 @@ export function MySkills() {
     return null;
   };
 
+  const mySkillsWorkspaceAvailable = !!mySkillsWorkspaceStatus?.available;
+  const mySkillsWorkspaceBusy = !!mySkillsWorkspaceAction || mySkillsWorkspaceSaving;
+
   return (
     <div className="app-page">
       <div className="app-page-header pr-2 pb-1">
-        <h1 className="app-page-title flex items-center gap-2">
-          {t("mySkills.title")}
-          <span className="app-badge">
-            {skills.length}
-          </span>
-        </h1>
+        <div className="flex flex-col gap-1">
+          <h1 className="app-page-title flex items-center gap-2">
+            {t("mySkills.title")}
+            <span className="app-badge">
+              {skills.length}
+            </span>
+          </h1>
+          {activeScenario ? (
+            <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted">
+              <span className="rounded-full bg-surface-hover px-2 py-0.5 font-medium text-secondary">
+                {t("mySkills.currentScenarioLabel", { scenario: activeScenarioName })}
+              </span>
+              <span>{t("mySkills.scenarioAgentSummary", {
+                configured: scenarioAgentSummary?.configured_count ?? 0,
+                available: scenarioAgentSummary?.available_count ?? tools.filter((tool) => tool.installed && tool.enabled).length,
+              })}</span>
+              {(scenarioAgentSummary?.agents ?? []).slice(0, 3).map((agent) => (
+                <span
+                  key={agent.key}
+                  className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-secondary"
+                  title={t("mySkills.scenarioAgentSkillCount", {
+                    agent: agent.display_name,
+                    count: agent.skill_count,
+                  })}
+                >
+                  {agent.display_name}
+                </span>
+              ))}
+              {(scenarioAgentSummary?.agents?.length ?? 0) > 3 ? (
+                <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">
+                  {t("mySkills.scenarioAgentMore", {
+                    count: (scenarioAgentSummary?.agents.length ?? 0) - 3,
+                  })}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="app-toolbar">
@@ -953,6 +1176,131 @@ export function MySkills() {
         </div>
       </div>
 
+      <div className="rounded-xl border border-border-subtle bg-surface px-4 py-3 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 text-[13px] font-semibold text-secondary">
+              <Github className="h-3.5 w-3.5" />
+              {t("mySkills.myRepo.title")}
+            </h2>
+            <p className="mt-1 text-[12px] text-muted">{t("mySkills.myRepo.description")}</p>
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                mySkillsWorkspaceAvailable
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                  : "bg-red-500/10 text-red-600 dark:text-red-300"
+              )}
+            >
+              {mySkillsWorkspaceAvailable
+                ? t("mySkills.myRepo.ready")
+                : t("mySkills.myRepo.notReady")}
+            </span>
+            {mySkillsWorkspaceStatus ? (
+              <>
+                <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">
+                  {mySkillsWorkspaceStatus.configured
+                    ? t("mySkills.myRepo.configured")
+                    : t("mySkills.myRepo.autoDetected")}
+                </span>
+                {mySkillsWorkspaceStatus.branch ? (
+                  <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">
+                    {t("mySkills.myRepo.branch", { branch: mySkillsWorkspaceStatus.branch })}
+                  </span>
+                ) : null}
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                    mySkillsWorkspaceStatus.has_changes
+                      ? "bg-amber-500/12 text-amber-600 dark:text-amber-300"
+                      : "bg-surface-hover text-muted"
+                  )}
+                >
+                  {mySkillsWorkspaceStatus.has_changes
+                    ? t("mySkills.myRepo.dirty")
+                    : t("mySkills.myRepo.clean")}
+                </span>
+                <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">
+                  {t("mySkills.myRepo.managedCount", {
+                    count: mySkillsWorkspaceStatus.managed_skill_count,
+                  })}
+                </span>
+              </>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <input
+            value={mySkillsWorkspacePath}
+            onChange={(e) => setMySkillsWorkspacePath(e.target.value)}
+            placeholder={t("mySkills.myRepo.pathPlaceholder")}
+            className="app-input min-w-[260px] flex-1 text-[12px]"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          <button
+            type="button"
+            onClick={handleBrowseMySkillsWorkspace}
+            disabled={mySkillsWorkspaceBusy}
+            className="app-button-secondary"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            {t("mySkills.myRepo.browse")}
+          </button>
+          <button
+            type="button"
+            onClick={handleSaveMySkillsWorkspacePath}
+            disabled={mySkillsWorkspaceBusy}
+            className="app-button-secondary"
+          >
+            {mySkillsWorkspaceSaving ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            )}
+            {t("mySkills.myRepo.savePath")}
+          </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="truncate text-[11px] text-faint" title={mySkillsWorkspaceStatus?.path || ""}>
+            {mySkillsWorkspaceStatus?.path
+              ? t("mySkills.myRepo.currentPath", { path: mySkillsWorkspaceStatus.path })
+              : t("mySkills.myRepo.currentPathMissing")}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {(["pull", "update", "push"] as MySkillsWorkspaceAction[]).map((action) => (
+              <button
+                key={action}
+                type="button"
+                onClick={() =>
+                  action === "push"
+                    ? handleRunMySkillsWorkspaceAction(action)
+                    : setMySkillsWorkspaceConfirm(action)
+                }
+                disabled={!mySkillsWorkspaceAvailable || mySkillsWorkspaceBusy}
+                className="app-button-secondary"
+              >
+                {mySkillsWorkspaceAction === action ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : action === "pull" ? (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                ) : action === "update" ? (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                ) : (
+                  <ArrowUpCircle className="h-3.5 w-3.5" />
+                )}
+                {mySkillsActionLabel(action)}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <div className="flex flex-wrap items-center gap-1 px-1 -mt-2 -mb-3">
         {(["local", "import", "git", "skillssh"] as const).map((src) => (
           <button
@@ -968,31 +1316,10 @@ export function MySkills() {
             {t(`mySkills.sourceFilter.${src}`)}
           </button>
         ))}
-        {allTags.length > 0 && (
+        {sortedAllTags.length > 0 && (
           <>
             <span className="mx-0.5 h-3 w-px bg-border-subtle" />
-            {allTags.map((tag, i) => {
-              const colors = [
-                "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-                "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-                "bg-violet-500/15 text-violet-600 dark:text-violet-400",
-                "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-                "bg-rose-500/15 text-rose-600 dark:text-rose-400",
-                "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
-                "bg-orange-500/15 text-orange-600 dark:text-orange-400",
-                "bg-pink-500/15 text-pink-600 dark:text-pink-400",
-              ];
-              const activeColors = [
-                "bg-blue-500 text-white dark:bg-blue-500",
-                "bg-emerald-500 text-white dark:bg-emerald-500",
-                "bg-violet-500 text-white dark:bg-violet-500",
-                "bg-amber-500 text-white dark:bg-amber-500",
-                "bg-rose-500 text-white dark:bg-rose-500",
-                "bg-cyan-500 text-white dark:bg-cyan-500",
-                "bg-orange-500 text-white dark:bg-orange-500",
-                "bg-pink-500 text-white dark:bg-pink-500",
-              ];
-              const colorIndex = i % colors.length;
+            {sortedAllTags.map((tag) => {
               const isActive = tagFilters.has(tag);
               return (
                 <button
@@ -1000,7 +1327,7 @@ export function MySkills() {
                   onClick={() => setTagFilters(toggleFilter(tagFilters, tag))}
                   className={cn(
                     "rounded-full px-2.5 py-0.5 text-[12px] font-medium transition-colors",
-                    isActive ? activeColors[colorIndex] : colors[colorIndex]
+                    tagToneClasses(tag, isActive)
                   )}
                 >
                   {tag}
@@ -1214,15 +1541,18 @@ export function MySkills() {
                       </div>
                     )}
                     <div className="mt-2 flex flex-wrap items-center gap-1">
-                      {skill.tags.map((tag) => (
+                      {sortTagsByCategory(skill.tags).map((tag) => (
                         <span
                           key={tag}
-                          className="group/tag inline-flex items-center gap-0.5 rounded-full bg-accent-bg px-2 py-0.5 text-[11px] font-medium text-accent-light"
+                          className={cn(
+                            "group/tag inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                            tagToneClasses(tag)
+                          )}
                         >
                           {tag}
                           <button
                             onClick={(e) => { e.stopPropagation(); handleRemoveTag(skill, tag); }}
-                            className="hidden group-hover/tag:inline-flex rounded-full p-0 text-accent-light/60 hover:text-accent-light"
+                            className="hidden group-hover/tag:inline-flex rounded-full p-0 text-current/60 hover:text-current"
                           >
                             <X className="h-2.5 w-2.5" />
                           </button>
@@ -1348,10 +1678,13 @@ export function MySkills() {
                 </p>
 
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {skill.tags.map((tag) => (
+                  {sortTagsByCategory(skill.tags).map((tag) => (
                     <span
                       key={tag}
-                      className="inline-flex items-center rounded-full bg-accent-bg px-1.5 py-0.5 text-[11px] font-medium text-accent-light"
+                      className={cn(
+                        "inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-medium",
+                        tagToneClasses(tag)
+                      )}
                     >
                       {tag}
                     </span>
@@ -1467,6 +1800,31 @@ export function MySkills() {
         message={t("mySkills.batchDeleteConfirm", { count: selectedIds.size })}
         onClose={() => setBatchDeleteConfirm(false)}
         onConfirm={handleBatchDelete}
+      />
+      <ConfirmDialog
+        open={mySkillsWorkspaceConfirm !== null}
+        title={
+          mySkillsWorkspaceConfirm === "pull"
+            ? t("mySkills.myRepo.confirm.pullTitle")
+            : t("mySkills.myRepo.confirm.updateTitle")
+        }
+        message={
+          mySkillsWorkspaceConfirm === "pull"
+            ? t("mySkills.myRepo.confirm.pullMessage")
+            : t("mySkills.myRepo.confirm.updateMessage")
+        }
+        tone="warning"
+        confirmLabel={
+          mySkillsWorkspaceConfirm
+            ? mySkillsActionLabel(mySkillsWorkspaceConfirm)
+            : t("common.confirm")
+        }
+        onClose={() => setMySkillsWorkspaceConfirm(null)}
+        onConfirm={() =>
+          mySkillsWorkspaceConfirm
+            ? handleRunMySkillsWorkspaceAction(mySkillsWorkspaceConfirm)
+            : Promise.resolve()
+        }
       />
       <ConfirmDialog
         open={restoreVersionTag !== null}

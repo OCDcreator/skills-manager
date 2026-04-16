@@ -64,7 +64,7 @@ export function InstallSkills() {
   const [gitCancelKey, setGitCancelKey] = useState<string | null>(null);
   const [gitPreview, setGitPreview] = useState<GitPreviewResult | null>(null);
   const [gitPreviewRepoUrl, setGitPreviewRepoUrl] = useState<string | null>(null);
-  const [gitSelections, setGitSelections] = useState<{ dir_name: string; name: string; description: string | null; selected: boolean }[]>([]);
+  const [gitSelections, setGitSelections] = useState<{ dir_name: string; relative_path: string; name: string; description: string | null; selected: boolean }[]>([]);
   const [gitConfirmLoading, setGitConfirmLoading] = useState(false);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scanLoading, setScanLoading] = useState(false);
@@ -464,6 +464,7 @@ export function InstallSkills() {
       setGitPreviewRepoUrl(url);
       setGitSelections(preview.skills.map((s) => ({
         dir_name: s.dir_name,
+        relative_path: s.relative_path,
         name: s.name,
         description: s.description,
         selected: true,
@@ -502,7 +503,7 @@ export function InstallSkills() {
       await api.confirmGitInstall(
         repoUrl,
         gitPreview.temp_dir,
-        selected.map((s) => ({ dir_name: s.dir_name, name: s.name }))
+        selected.map((s) => ({ dir_name: s.dir_name, relative_path: s.relative_path, name: s.name }))
       );
       await Promise.all([refreshScenarios(), refreshManagedSkills()]);
       toast.success(t("install.toast.success", { name: selected.map((s) => s.name).join(", ") }));
@@ -1542,7 +1543,7 @@ export function InstallSkills() {
               <div className="max-h-64 space-y-2 overflow-y-auto scrollbar-hide pr-1">
                 {gitSelections.map((item, idx) => (
                   <div
-                    key={item.dir_name}
+                    key={item.relative_path}
                     className={cn(
                       "flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors",
                       item.selected
@@ -1576,6 +1577,11 @@ export function InstallSkills() {
                       />
                       {item.description ? (
                         <p className="mt-1 truncate text-[12px] text-muted">{item.description}</p>
+                      ) : null}
+                      {item.relative_path ? (
+                        <p className="mt-1 truncate text-[11px] text-faint">
+                          {t("install.gitPreview.relativePath", { path: item.relative_path })}
+                        </p>
                       ) : null}
                     </div>
                   </div>

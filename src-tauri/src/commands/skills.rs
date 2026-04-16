@@ -6,10 +6,12 @@ use walkdir::WalkDir;
 
 use crate::core::{
     central_repo,
+    content_hash,
     error::AppError,
     git_fetcher,
     install_cancel::InstallCancelRegistry,
     installer,
+    my_skills_repo,
     skill_metadata::{self, is_valid_skill_dir},
     skill_store::{SkillRecord, SkillStore, SkillTargetRecord},
     sync_engine,
@@ -99,6 +101,7 @@ struct GitSkillSource {
 #[derive(Debug, serde::Serialize)]
 pub struct GitSkillPreview {
     pub dir_name: String,
+    pub relative_path: String,
     pub name: String,
     pub description: Option<String>,
 }
@@ -112,6 +115,7 @@ pub struct GitPreviewResult {
 #[derive(Debug, serde::Deserialize)]
 pub struct SkillInstallItem {
     pub dir_name: String,
+    pub relative_path: Option<String>,
     pub name: String,
 }
 
@@ -229,6 +233,19 @@ pub async fn get_source_skill_document(
             return Err(AppError::invalid_input(
                 "Skill does not support source diff preview",
             ));
+        }
+
+        if let Some(source) =
+            my_skills_repo::resolve_workspace_source(&store, &skill).map_err(AppError::io)?
+        {
+            let (filename, content) = read_skill_document_from_dir(&source.skill_dir)?;
+            return Ok(SourceSkillDocumentDto {
+                skill_id,
+                filename,
+                content,
+                source_label: "My Skills Workspace".to_string(),
+                revision: source.revision,
+            });
         }
 
         let git_source = git_source_from_skill(&skill)?;
@@ -558,12 +575,13 @@ pub async fn preview_git_install(
 
         let build_preview = || -> Result<GitPreviewResult, AppError> {
             let skill_dir = resolve_skill_dir(&temp_dir, parsed.subpath.as_deref(), None)?;
-            let dirs = collect_git_skill_dirs(&skill_dir);
+            let dirs = collect_git_skill_dirs(&skill_dir, Some(&parsed.clone_url));
 
             let skills: Vec<GitSkillPreview> = dirs
                 .iter()
                 .map(|dir| {
                     let meta = skill_metadata::parse_skill_md(dir);
+                    let relative_path = git_skill_relative_path(&skill_dir, dir);
                     let dir_name = dir
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -574,6 +592,7 @@ pub async fn preview_git_install(
                         .unwrap_or_else(|| dir_name.clone());
                     GitSkillPreview {
                         dir_name,
+                        relative_path,
                         name,
                         description: meta.description,
                     }
@@ -612,16 +631,22 @@ pub async fn confirm_git_install(
 
             let parsed = git_fetcher::parse_git_source(&repo_url);
             let skill_dir = resolve_skill_dir(&temp_path, parsed.subpath.as_deref(), None)?;
-            let all_dirs = collect_git_skill_dirs(&skill_dir);
+            let all_dirs = collect_git_skill_dirs(&skill_dir, Some(&parsed.clone_url));
             let revision = git_fetcher::get_head_revision(&temp_path).map_err(AppError::git)?;
             let active = store.get_active_scenario_id().ok().flatten();
 
             for dir in &all_dirs {
+                let relative_path = git_skill_relative_path(&skill_dir, dir);
                 let dir_name_entry = dir
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let item = match items.iter().find(|i| i.dir_name == dir_name_entry) {
+                let item = match items.iter().find(|item| {
+                    item.relative_path
+                        .as_deref()
+                        .is_some_and(|path| path == relative_path.as_str())
+                        || (item.relative_path.is_none() && item.dir_name == dir_name_entry)
+                }) {
                     Some(i) => i,
                     None => continue,
                 };
@@ -748,6 +773,37 @@ pub async fn update_skill(
             return Err(AppError::invalid_input(
                 "Only git-based skills can be updated",
             ));
+        }
+
+        if let Some(workspace_source) =
+            my_skills_repo::resolve_workspace_source(&store, &skill).map_err(AppError::io)?
+        {
+            store
+                .update_skill_update_status(&skill_id, "updating")
+                .map_err(AppError::db)?;
+
+            let update_result =
+                my_skills_repo::sync_skill_from_workspace_source(&store, &skill, &workspace_source)
+                    .map_err(AppError::io);
+
+            return match update_result {
+                Ok(content_changed) => {
+                    let skill = managed_skill_by_id(&store, &skill_id)?;
+                    Ok(UpdateSkillResult {
+                        skill,
+                        content_changed,
+                    })
+                }
+                Err(e) => {
+                    let _ = store.update_skill_check_state(
+                        &skill_id,
+                        Some(&workspace_source.revision),
+                        "error",
+                        Some(&e.message),
+                    );
+                    Err(e)
+                }
+            };
         }
 
         let git_source = git_source_from_skill(&skill)?;
@@ -1221,6 +1277,31 @@ fn check_skill_update_internal(
                     .map_err(AppError::db)?;
             }
 
+            if let Some(workspace_source) =
+                my_skills_repo::resolve_workspace_source(store, &skill).map_err(AppError::io)?
+            {
+                let local_hash =
+                    content_hash::hash_directory(&workspace_source.skill_dir).map_err(AppError::io)?;
+                let revision_changed =
+                    skill.source_revision.as_deref() != Some(workspace_source.revision.as_str());
+                let content_changed = skill.content_hash.as_deref() != Some(local_hash.as_str());
+                let update_status = if revision_changed || content_changed {
+                    "update_available"
+                } else {
+                    "up_to_date"
+                };
+
+                store
+                    .update_skill_check_state(
+                        &skill.id,
+                        Some(&workspace_source.revision),
+                        update_status,
+                        None,
+                    )
+                    .map_err(AppError::db)?;
+                return managed_skill_by_id(store, skill_id);
+            }
+
             match git_fetcher::resolve_remote_revision(
                 &git_source.clone_url,
                 git_source.branch.as_deref(),
@@ -1364,7 +1445,14 @@ fn skill_ssh_id(skill: &SkillRecord) -> Option<String> {
 /// Return the list of individual skill directories to install from a resolved repo dir.
 /// If `skill_dir` is itself a valid skill, returns `[skill_dir]`.
 /// Otherwise enumerates immediate subdirs that are valid skills; falls back to `[skill_dir]`.
-fn collect_git_skill_dirs(skill_dir: &Path) -> Vec<PathBuf> {
+fn collect_git_skill_dirs(skill_dir: &Path, repo_url: Option<&str>) -> Vec<PathBuf> {
+    let my_skills_dirs = my_skills_repo::is_my_skills_collection_root(skill_dir, repo_url)
+        .then(|| my_skills_repo::collect_workspace_skill_dirs(skill_dir))
+        .unwrap_or_default();
+    if !my_skills_dirs.is_empty() {
+        return my_skills_dirs;
+    }
+
     if is_valid_skill_dir(skill_dir) {
         return vec![skill_dir.to_path_buf()];
     }
@@ -1381,6 +1469,17 @@ fn collect_git_skill_dirs(skill_dir: &Path) -> Vec<PathBuf> {
     } else {
         dirs
     }
+}
+
+fn git_skill_relative_path(collection_root: &Path, skill_dir: &Path) -> String {
+    git_fetcher::relative_subpath(collection_root, skill_dir)
+        .map(|path| path.replace('\\', "/"))
+        .or_else(|| {
+            skill_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Validate and canonicalize a temp directory path used by the git preview/install flow.

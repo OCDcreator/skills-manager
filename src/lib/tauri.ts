@@ -81,6 +81,19 @@ export interface Scenario {
   updated_at: number;
 }
 
+export interface ScenarioAgentUsage {
+  key: string;
+  display_name: string;
+  skill_count: number;
+}
+
+export interface ScenarioAgentSummary {
+  scenario_id: string;
+  configured_count: number;
+  available_count: number;
+  agents: ScenarioAgentUsage[];
+}
+
 export interface DiscoveredGroup {
   name: string;
   fingerprint: string | null;
@@ -213,6 +226,7 @@ export const installGit = (repoUrl: string, name?: string) =>
 
 export interface GitSkillPreview {
   dir_name: string;
+  relative_path: string;
   name: string;
   description: string | null;
 }
@@ -224,6 +238,7 @@ export interface GitPreviewResult {
 
 export interface SkillInstallItem {
   dir_name: string;
+  relative_path?: string | null;
   name: string;
 }
 
@@ -417,12 +432,47 @@ export const gitBackupListVersions = (limit?: number) =>
 export const gitBackupRestoreVersion = (tag: string) =>
   invoke<void>("git_backup_restore_version", { tag });
 
+// ── My Skills Workspace ──
+
+export type MySkillsWorkspaceAction = "pull" | "push" | "update";
+
+export interface MySkillsWorkspaceStatus {
+  available: boolean;
+  configured: boolean;
+  path: string | null;
+  is_repo: boolean;
+  branch: string | null;
+  remote_url: string | null;
+  has_changes: boolean;
+  managed_skill_count: number;
+}
+
+export interface MySkillsWorkspaceActionResult {
+  action: MySkillsWorkspaceAction;
+  path: string;
+  refreshed_skills: number;
+  status: "success" | "no_changes" | "partial" | "cancelled" | "error";
+  detail: string | null;
+  branch: string | null;
+  remote_url: string | null;
+  has_changes: boolean;
+}
+
+export const getMySkillsWorkspaceStatus = () =>
+  invoke<MySkillsWorkspaceStatus>("get_my_skills_workspace_status");
+
+export const runMySkillsWorkspaceAction = (action: MySkillsWorkspaceAction) =>
+  invoke<MySkillsWorkspaceActionResult>("run_my_skills_workspace_action", { action });
+
 // ── Scenarios ──
 
 export const getScenarios = () => invoke<Scenario[]>("get_scenarios");
 
 export const getActiveScenario = () =>
   invoke<Scenario | null>("get_active_scenario");
+
+export const getScenarioAgentSummary = (scenarioId: string) =>
+  invoke<ScenarioAgentSummary>("get_scenario_agent_summary", { scenarioId });
 
 export const createScenario = (name: string, description?: string, icon?: string) =>
   invoke<Scenario>("create_scenario", {
