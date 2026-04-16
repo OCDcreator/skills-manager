@@ -5,6 +5,7 @@ import type { ManagedSkill, Project, Scenario, ToolInfo } from "../lib/tauri";
 import * as api from "../lib/tauri";
 import i18n from "../i18n";
 import { toast } from "sonner";
+import { applyTextSize } from "../lib/textSize";
 
 interface AppState {
   scenarios: Scenario[];
@@ -120,8 +121,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Apply saved text size on startup
       const savedSize = await api.getSettings("text_size").catch(() => null);
       if (savedSize) {
-        const zoomMap: Record<string, string> = { small: "0.9", default: "1", large: "1.1", xlarge: "1.2" };
-        document.documentElement.style.zoom = zoomMap[savedSize] || "1";
+        await applyTextSize(savedSize);
       }
     }
     init();

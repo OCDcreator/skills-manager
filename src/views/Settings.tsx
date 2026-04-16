@@ -39,14 +39,9 @@ import { useThemeContext } from "../context/ThemeContext";
 import * as api from "../lib/tauri";
 import type { AppUpdateInfo } from "../lib/tauri";
 import type { Theme } from "../hooks/useTheme";
+import { applyTextSize } from "../lib/textSize";
 
 const IS_WINDOWS = navigator.userAgent.includes("Windows");
-const TEXT_SIZE_ZOOM_MAP: Record<string, string> = {
-  small: "0.9",
-  default: "1",
-  large: "1.1",
-  xlarge: "1.2",
-};
 
 const MAINSTREAM_AGENT_KEYS = new Set([
   "claude_code",
@@ -60,10 +55,6 @@ const MAINSTREAM_AGENT_KEYS = new Set([
   "antigravity",
   "amp",
 ]);
-
-function applyTextSize(size: string) {
-  document.documentElement.style.zoom = TEXT_SIZE_ZOOM_MAP[size] || "1";
-}
 
 function compactHomePath(path: string) {
   return path
@@ -288,10 +279,10 @@ export function Settings() {
     api.setSettings("language", lng);
   };
 
-  const handleTextSizeChange = (size: string) => {
+  const handleTextSizeChange = async (size: string) => {
     setTextSize(size);
-    applyTextSize(size);
-    api.setSettings("text_size", size);
+    await applyTextSize(size);
+    await api.setSettings("text_size", size);
   };
 
   const handleOpenRepoInFinder = async () => {

@@ -99,6 +99,7 @@ export function Sidebar() {
     { name: t("sidebar.dashboard"), path: "/", icon: LayoutDashboard },
     { name: t("sidebar.mySkills"), path: "/my-skills", icon: Layers },
     { name: t("sidebar.installSkills"), path: "/install", icon: Download },
+    { name: t("sidebar.settings"), path: "/settings", icon: Settings },
   ];
 
   const handleSwitchScenario = async (id: string) => {
@@ -436,26 +437,6 @@ export function Sidebar() {
           </button>
         </div>
 
-        {/* Settings */}
-        <div className="p-2.5 border-t border-border-subtle shrink-0">
-          <Link
-            to="/settings"
-            className={cn(
-              "flex items-center gap-2.5 px-2.5 py-[7px] rounded-[5px] text-sm font-medium transition-colors outline-none",
-              location.pathname === "/settings"
-                ? "bg-surface-active text-primary"
-                : "text-tertiary hover:text-secondary hover:bg-surface-hover"
-            )}
-          >
-            <Settings
-              className={cn(
-                "w-4 h-4 shrink-0",
-                location.pathname === "/settings" ? "text-accent" : "text-muted"
-              )}
-            />
-            {t("sidebar.settings")}
-          </Link>
-        </div>
       </div>
 
       <CreateScenarioDialog
