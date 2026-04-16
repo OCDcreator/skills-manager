@@ -1,6 +1,9 @@
 use crate::core::{
     error::AppError,
-    my_skills_repo::{self, MySkillsWorkspaceAction, MySkillsWorkspaceActionResult, MySkillsWorkspaceStatus},
+    my_skills_repo::{
+        self, MySkillsWorkspaceAction, MySkillsWorkspaceActionResult,
+        MySkillsWorkspaceLinkImportResult, MySkillsWorkspaceStatus,
+    },
     skill_store::SkillStore,
 };
 use std::sync::Arc;
@@ -28,6 +31,19 @@ pub async fn run_my_skills_workspace_action(
 
     tokio::task::spawn_blocking(move || {
         my_skills_repo::run_workspace_action(&store, action).map_err(AppError::classify_git_error)
+    })
+    .await?
+}
+
+#[tauri::command]
+pub async fn run_my_skills_link_import(
+    source_url: String,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<MySkillsWorkspaceLinkImportResult, AppError> {
+    let store = store.inner().clone();
+
+    tokio::task::spawn_blocking(move || {
+        my_skills_repo::run_link_import(&store, &source_url).map_err(AppError::internal)
     })
     .await?
 }

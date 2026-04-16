@@ -455,6 +455,7 @@ pub fn run() {
             // My Skills Workspace
             commands::my_skills::get_my_skills_workspace_status,
             commands::my_skills::run_my_skills_workspace_action,
+            commands::my_skills::run_my_skills_link_import,
             // Projects
             commands::projects::get_projects,
             commands::projects::add_project,

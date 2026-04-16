@@ -458,11 +458,30 @@ export interface MySkillsWorkspaceActionResult {
   has_changes: boolean;
 }
 
+export interface MySkillsWorkspaceLinkImportResult {
+  path: string;
+  source_url: string;
+  runner: string;
+  status: "success" | "no_changes" | "partial" | "error";
+  detail: string | null;
+  refreshed_skills: number;
+  imported_skills: number;
+  skipped_skills: number;
+  imported_names: string[];
+  errors: string[];
+  branch: string | null;
+  remote_url: string | null;
+  has_changes: boolean;
+}
+
 export const getMySkillsWorkspaceStatus = () =>
   invoke<MySkillsWorkspaceStatus>("get_my_skills_workspace_status");
 
 export const runMySkillsWorkspaceAction = (action: MySkillsWorkspaceAction) =>
   invoke<MySkillsWorkspaceActionResult>("run_my_skills_workspace_action", { action });
+
+export const runMySkillsLinkImport = (sourceUrl: string) =>
+  invoke<MySkillsWorkspaceLinkImportResult>("run_my_skills_link_import", { sourceUrl });
 
 // ── Scenarios ──
 

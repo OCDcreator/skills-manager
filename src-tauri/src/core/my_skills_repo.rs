@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -13,6 +14,7 @@ use super::{
 
 pub const WORKSPACE_PATH_SETTING_KEY: &str = "my_skills_workspace_path";
 const MY_SKILLS_REPO_SLUG: &str = "ocdcreator/my-skills";
+const MY_SKILLS_REPO_URL: &str = "https://github.com/OCDcreator/my-skills";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MySkillsWorkspaceStatus {
@@ -33,6 +35,23 @@ pub struct MySkillsWorkspaceActionResult {
     pub refreshed_skills: usize,
     pub status: String,
     pub detail: Option<String>,
+    pub branch: Option<String>,
+    pub remote_url: Option<String>,
+    pub has_changes: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MySkillsWorkspaceLinkImportResult {
+    pub path: String,
+    pub source_url: String,
+    pub runner: String,
+    pub status: String,
+    pub detail: Option<String>,
+    pub refreshed_skills: usize,
+    pub imported_skills: usize,
+    pub skipped_skills: usize,
+    pub imported_names: Vec<String>,
+    pub errors: Vec<String>,
     pub branch: Option<String>,
     pub remote_url: Option<String>,
     pub has_changes: bool,
@@ -145,6 +164,52 @@ pub fn run_workspace_action(
         refreshed_skills,
         status: report.status.as_str().to_string(),
         detail: report.detail,
+        branch: status.branch,
+        remote_url: status.remote_url,
+        has_changes: status.has_changes,
+    })
+}
+
+pub fn run_link_import(
+    store: &SkillStore,
+    source_url: &str,
+) -> Result<MySkillsWorkspaceLinkImportResult> {
+    let source_url = source_url.trim();
+    if source_url.is_empty() {
+        bail!("Source URL is required");
+    }
+
+    let Some(workspace) = resolve_workspace_path(store) else {
+        bail!("My Skills workspace path is not configured");
+    };
+
+    ensure_workspace_root(&workspace)?;
+    let before_paths = workspace_skill_path_set(&workspace);
+    let output = execute_workspace_link_import(&workspace, source_url)?;
+    let report = parse_agent_import_output(&output);
+
+    if !output.status.success() || matches!(report.status, AgentImportStatus::Error) {
+        bail!(
+            "My Skills link import failed: {}",
+            report.detail.unwrap_or_else(|| summarize_output(&output))
+        );
+    }
+
+    let refreshed_skills = refresh_managed_skills_from_workspace(store, &workspace)?;
+    let import_summary = import_new_skills_from_workspace(store, &workspace, &before_paths)?;
+    let status = git_backup::get_status(&workspace)?;
+
+    Ok(MySkillsWorkspaceLinkImportResult {
+        path: workspace.to_string_lossy().to_string(),
+        source_url: source_url.to_string(),
+        runner: "OpenCode".to_string(),
+        status: report.status.as_str().to_string(),
+        detail: report.detail,
+        refreshed_skills,
+        imported_skills: import_summary.imported,
+        skipped_skills: import_summary.skipped,
+        imported_names: import_summary.imported_names,
+        errors: import_summary.errors,
         branch: status.branch,
         remote_url: status.remote_url,
         has_changes: status.has_changes,
@@ -410,6 +475,35 @@ fn execute_workspace_script(workspace: &Path, action: MySkillsWorkspaceAction) -
         .with_context(|| format!("Failed to finish My Skills {} script", action.as_str()))
 }
 
+fn execute_workspace_link_import(workspace: &Path, source_url: &str) -> Result<Output> {
+    let prompt = build_workspace_link_import_prompt(source_url);
+    let mut command = Command::new("opencode");
+    command
+        .arg("run")
+        .arg("--dir")
+        .arg(workspace)
+        .arg("--dangerously-skip-permissions")
+        .arg("--title")
+        .arg(format!("Import {} into my-skills", truncate_title(source_url)))
+        .arg(prompt)
+        .current_dir(workspace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("NO_COLOR", "1");
+
+    let child = command.spawn().with_context(|| {
+        format!(
+            "Failed to start OpenCode in {}. Make sure `opencode` is installed and configured.",
+            workspace.display()
+        )
+    })?;
+
+    child
+        .wait_with_output()
+        .with_context(|| format!("Failed to finish OpenCode import in {}", workspace.display()))
+}
+
 fn script_path_for_action(workspace: &Path, action: MySkillsWorkspaceAction) -> Option<PathBuf> {
     let base = action.as_str();
     let bat = workspace.join(format!("{base}.bat"));
@@ -505,6 +599,31 @@ struct WorkspaceScriptReport {
     detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentImportStatus {
+    Success,
+    NoChanges,
+    Partial,
+    Error,
+}
+
+impl AgentImportStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::NoChanges => "no_changes",
+            Self::Partial => "partial",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AgentImportReport {
+    status: AgentImportStatus,
+    detail: Option<String>,
+}
+
 fn parse_workspace_script_output(output: &Output) -> WorkspaceScriptReport {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -535,6 +654,39 @@ fn parse_workspace_script_output(output: &Output) -> WorkspaceScriptReport {
     }
 
     WorkspaceScriptReport { status, detail }
+}
+
+fn parse_agent_import_output(output: &Output) -> AgentImportReport {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut status = if output.status.success() {
+        AgentImportStatus::Success
+    } else {
+        AgentImportStatus::Error
+    };
+    let mut detail = None;
+
+    for line in stdout.lines().chain(stderr.lines()) {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("RESULT:") {
+            status = classify_agent_import_status(value.trim(), status);
+        }
+        if let Some(value) = trimmed.strip_prefix("DETAIL:") {
+            let value = value.trim();
+            if !value.is_empty() {
+                detail = Some(value.to_string());
+            }
+        }
+    }
+
+    if detail.is_none() {
+        let summary = summarize_output(output);
+        if !summary.is_empty() {
+            detail = Some(summary);
+        }
+    }
+
+    AgentImportReport { status, detail }
 }
 
 fn classify_workspace_script_status(
@@ -569,6 +721,25 @@ fn classify_workspace_script_status(
     fallback
 }
 
+fn classify_agent_import_status(value: &str, fallback: AgentImportStatus) -> AgentImportStatus {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    if normalized.contains("no changes") || normalized.contains("no_changes") {
+        return AgentImportStatus::NoChanges;
+    }
+    if normalized.contains("partial") {
+        return AgentImportStatus::Partial;
+    }
+    if normalized.contains("error") || normalized.contains("failed") {
+        return AgentImportStatus::Error;
+    }
+    if normalized.contains("success") {
+        return AgentImportStatus::Success;
+    }
+
+    fallback
+}
+
 fn refresh_managed_skills_from_workspace(store: &SkillStore, workspace: &Path) -> Result<usize> {
     let revision = git_fetcher::get_head_revision(workspace)
         .with_context(|| format!("Failed to resolve My Skills revision from {}", workspace.display()))?;
@@ -590,6 +761,171 @@ fn refresh_managed_skills_from_workspace(store: &SkillStore, workspace: &Path) -
     }
 
     Ok(refreshed)
+}
+
+struct WorkspaceImportSummary {
+    imported: usize,
+    skipped: usize,
+    imported_names: Vec<String>,
+    errors: Vec<String>,
+}
+
+struct WorkspaceInstallMetadata {
+    source_type: String,
+    source_ref: Option<String>,
+    source_ref_resolved: Option<String>,
+    source_subpath: Option<String>,
+    source_branch: Option<String>,
+    source_revision: Option<String>,
+    remote_revision: Option<String>,
+    update_status: String,
+}
+
+fn import_new_skills_from_workspace(
+    store: &SkillStore,
+    workspace: &Path,
+    before_paths: &BTreeSet<String>,
+) -> Result<WorkspaceImportSummary> {
+    let revision = git_fetcher::get_head_revision(workspace)
+        .with_context(|| format!("Failed to resolve My Skills revision from {}", workspace.display()))?;
+    let active = store.get_active_scenario_id().ok().flatten();
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let mut imported_names = Vec::new();
+    let mut errors = Vec::new();
+
+    for dir in collect_workspace_skill_dirs(workspace) {
+        let Some(subpath) = path_key(workspace, &dir) else {
+            continue;
+        };
+        if before_paths.contains(&subpath) {
+            continue;
+        }
+
+        let name = skill_metadata::infer_skill_name(&dir);
+        match installer::install_from_local(&dir, Some(&name)) {
+            Ok(result) => {
+                let metadata = WorkspaceInstallMetadata {
+                    source_type: "git".to_string(),
+                    source_ref: Some(MY_SKILLS_REPO_URL.to_string()),
+                    source_ref_resolved: Some(MY_SKILLS_REPO_URL.to_string()),
+                    source_subpath: Some(subpath),
+                    source_branch: None,
+                    source_revision: Some(revision.clone()),
+                    remote_revision: Some(revision.clone()),
+                    update_status: "up_to_date".to_string(),
+                };
+
+                match store_workspace_skill(store, &result, &metadata, active.as_deref()) {
+                    Ok(ImportStoreResult::Inserted(name)) => {
+                        imported += 1;
+                        imported_names.push(name);
+                    }
+                    Ok(ImportStoreResult::Skipped) => {
+                        skipped += 1;
+                    }
+                    Err(err) => errors.push(format!("{name}: {err}")),
+                }
+            }
+            Err(err) => errors.push(format!("{name}: {err}")),
+        }
+    }
+
+    Ok(WorkspaceImportSummary {
+        imported,
+        skipped,
+        imported_names,
+        errors,
+    })
+}
+
+enum ImportStoreResult {
+    Inserted(String),
+    Skipped,
+}
+
+fn store_workspace_skill(
+    store: &SkillStore,
+    result: &installer::InstallResult,
+    metadata: &WorkspaceInstallMetadata,
+    active_scenario_id: Option<&str>,
+) -> Result<ImportStoreResult> {
+    let prospective_path = PathBuf::from(&result.central_path);
+    let prospective_path_str = prospective_path.to_string_lossy().to_string();
+
+    if store
+        .get_skill_by_central_path(&prospective_path_str)?
+        .is_some()
+    {
+        return Ok(ImportStoreResult::Skipped);
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let id = uuid::Uuid::new_v4().to_string();
+    let record = SkillRecord {
+        id: id.clone(),
+        name: result.name.clone(),
+        description: result.description.clone(),
+        source_type: metadata.source_type.clone(),
+        source_ref: metadata.source_ref.clone(),
+        source_ref_resolved: metadata.source_ref_resolved.clone(),
+        source_subpath: metadata.source_subpath.clone(),
+        source_branch: metadata.source_branch.clone(),
+        source_revision: metadata.source_revision.clone(),
+        remote_revision: metadata.remote_revision.clone(),
+        central_path: prospective_path_str,
+        content_hash: Some(result.content_hash.clone()),
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+        status: "ok".to_string(),
+        update_status: metadata.update_status.clone(),
+        last_checked_at: Some(now),
+        last_check_error: None,
+    };
+
+    store.insert_skill(&record)?;
+    if let Some(scenario_id) = active_scenario_id {
+        store.add_skill_to_scenario(scenario_id, &id)?;
+    }
+
+    Ok(ImportStoreResult::Inserted(result.name.clone()))
+}
+
+fn workspace_skill_path_set(workspace: &Path) -> BTreeSet<String> {
+    collect_workspace_skill_dirs(workspace)
+        .into_iter()
+        .filter_map(|dir| path_key(workspace, &dir))
+        .collect()
+}
+
+fn build_workspace_link_import_prompt(source_url: &str) -> String {
+    format!(
+        "你在 my-skills 仓库根目录工作，目标是把这个来源链接纳入仓库：{source_url}\n\n\
+请严格按下面流程执行：\n\
+1. 先阅读 AGENTS.md 和 README.md，再检查 git status。\n\
+2. 如果工作区干净，则先同步最新 origin/main；如果不干净，不要做 destructive reset，保留现有修改并在此基础上继续。\n\
+3. 判断这个链接应该作为哪一类内容接入：\n\
+   - 上游仓库里存在真实 Skill 目录（包含 SKILL.md）=> 作为 external skill source\n\
+   - 主要是参考资料/文档，没有真实 Skill 目录 => 作为 external reference source\n\
+   - 如果更适合整理成自定义 Skill => 放到 custom/\n\
+4. 严格遵守 AGENTS.md 中的规则更新所有必须文件，尤其是 README.md、update.sh、update.bat，以及存在时的 SKILLS.md。\n\
+5. 如果新增的是 external source/reference source，确保 external/<name>/ 中的镜像内容已经落地；必要时运行 update 脚本验证。\n\
+6. 不要改动无关文件；保持 Windows 和 shell 脚本计数一致。\n\
+7. 完成后自行提交到 main 并 push 到 origin。\n\
+8. 最终必须用下面两行收尾：\n\
+RESULT: success 或 no_changes 或 partial 或 error\n\
+DETAIL: 用一句话说明你做了什么。\n"
+    )
+}
+
+fn truncate_title(value: &str) -> String {
+    let truncated: String = value.chars().take(60).collect();
+    if value.chars().count() > truncated.chars().count() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }
 
 fn sync_skill_from_workspace(

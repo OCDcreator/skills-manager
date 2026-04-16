@@ -22,6 +22,8 @@ import {
   Square,
   GripVertical,
   FolderOpen,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
@@ -64,6 +66,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 const MY_SKILLS_WORKSPACE_SETTING_KEY = "my_skills_workspace_path";
+const MY_SKILLS_IMPORT_URL_SETTING_KEY = "my_skills_import_source_url";
 const TAG_CATEGORY_ORDER = ["场景:", "来源:", "仓库:", "用途:", "集合:", "风险:"];
 type FilterMode = "all" | "enabled" | "available" | "updates";
 
@@ -186,6 +189,12 @@ function displaySnapshotLabel(tag: string) {
   return `${parts[0]}-${parts[1]}`;
 }
 
+function isMissingTauriCommand(error: unknown, commandName: string) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = message.toLowerCase();
+  return normalized.includes(commandName.toLowerCase()) && normalized.includes("not found");
+}
+
 export function MySkills() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -227,6 +236,9 @@ export function MySkills() {
   const [mySkillsWorkspaceSaving, setMySkillsWorkspaceSaving] = useState(false);
   const [mySkillsWorkspaceAction, setMySkillsWorkspaceAction] = useState<MySkillsWorkspaceAction | null>(null);
   const [mySkillsWorkspaceConfirm, setMySkillsWorkspaceConfirm] = useState<MySkillsWorkspaceAction | null>(null);
+  const [mySkillsImportUrl, setMySkillsImportUrl] = useState("");
+  const [mySkillsImporting, setMySkillsImporting] = useState(false);
+  const [mySkillsWorkspaceCollapsed, setMySkillsWorkspaceCollapsed] = useState(true);
   const [tagEditSkillId, setTagEditSkillId] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState("");
   const tagInputRef = useRef<HTMLInputElement>(null);
@@ -498,15 +510,17 @@ export function MySkills() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [status, savedPath] = await Promise.all([
+      const [status, savedPath, savedImportUrl] = await Promise.all([
         api.getMySkillsWorkspaceStatus().catch(() => null),
         api.getSettings(MY_SKILLS_WORKSPACE_SETTING_KEY).catch(() => null),
+        api.getSettings(MY_SKILLS_IMPORT_URL_SETTING_KEY).catch(() => null),
       ]);
       if (cancelled) return;
       if (status) {
         setMySkillsWorkspaceStatus(status);
       }
       setMySkillsWorkspacePath((savedPath?.trim() || status?.path || "").trim());
+      setMySkillsImportUrl((savedImportUrl?.trim() || "").trim());
     })();
     return () => {
       cancelled = true;
@@ -878,6 +892,47 @@ export function MySkills() {
     }
   };
 
+  const handleRunMySkillsLinkImport = async () => {
+    const trimmed = mySkillsImportUrl.trim();
+    if (!trimmed) return;
+
+    setMySkillsImporting(true);
+    try {
+      await api.setSettings(MY_SKILLS_IMPORT_URL_SETTING_KEY, trimmed).catch(() => {});
+      const result = await api.runMySkillsLinkImport(trimmed);
+      await Promise.all([
+        refreshManagedSkills(),
+        refreshScenarios(),
+        refreshMySkillsWorkspaceStatus(),
+      ]);
+
+      if (result.imported_skills > 0) {
+        toast.success(
+          t("mySkills.myRepo.linkImportSuccess", { count: result.imported_skills })
+        );
+      } else if (result.status === "no_changes") {
+        toast.info(t("mySkills.myRepo.linkImportNoChanges"));
+      } else {
+        toast.success(t("mySkills.myRepo.linkImportFinished"));
+      }
+
+      if (result.errors.length > 0) {
+        toast.warning(
+          t("mySkills.myRepo.linkImportErrors", { count: result.errors.length })
+        );
+      }
+    } catch (error: unknown) {
+      if (isMissingTauriCommand(error, "run_my_skills_link_import")) {
+        toast.error(t("mySkills.myRepo.linkImportNeedRestart"));
+      } else {
+        toast.error(getErrorMessage(error, t("common.error")));
+      }
+      await refreshMySkillsWorkspaceStatus();
+    } finally {
+      setMySkillsImporting(false);
+    }
+  };
+
   const handleGitStartBackup = async () => {
     setGitLoading("start");
     try {
@@ -1095,7 +1150,7 @@ export function MySkills() {
   };
 
   const mySkillsWorkspaceAvailable = !!mySkillsWorkspaceStatus?.available;
-  const mySkillsWorkspaceBusy = !!mySkillsWorkspaceAction || mySkillsWorkspaceSaving;
+  const mySkillsWorkspaceBusy = !!mySkillsWorkspaceAction || mySkillsWorkspaceSaving || mySkillsImporting;
 
   return (
     <div className="app-page">
@@ -1274,11 +1329,27 @@ export function MySkills() {
       <div className="rounded-xl border border-border-subtle bg-surface px-4 py-3 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="flex items-center gap-2 text-[13px] font-semibold text-secondary">
-              <Github className="h-3.5 w-3.5" />
-              {t("mySkills.myRepo.title")}
-            </h2>
-            <p className="mt-1 text-[12px] text-muted">{t("mySkills.myRepo.description")}</p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMySkillsWorkspaceCollapsed((current) => !current)}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[13px] font-semibold text-secondary transition-colors hover:bg-surface-hover"
+                title={mySkillsWorkspaceCollapsed
+                  ? t("mySkills.myRepo.expand")
+                  : t("mySkills.myRepo.collapse")}
+              >
+                {mySkillsWorkspaceCollapsed ? (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                )}
+                <Github className="h-3.5 w-3.5" />
+                {t("mySkills.myRepo.title")}
+              </button>
+            </div>
+            {!mySkillsWorkspaceCollapsed ? (
+              <p className="mt-1 text-[12px] text-muted">{t("mySkills.myRepo.description")}</p>
+            ) : null}
           </div>
           <div className="flex flex-wrap justify-end gap-1.5">
             <span
@@ -1327,73 +1398,125 @@ export function MySkills() {
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <input
-            value={mySkillsWorkspacePath}
-            onChange={(e) => setMySkillsWorkspacePath(e.target.value)}
-            placeholder={t("mySkills.myRepo.pathPlaceholder")}
-            className="app-input min-w-[260px] flex-1 text-[12px]"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-          <button
-            type="button"
-            onClick={handleBrowseMySkillsWorkspace}
-            disabled={mySkillsWorkspaceBusy}
-            className="app-button-secondary"
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-            {t("mySkills.myRepo.browse")}
-          </button>
-          <button
-            type="button"
-            onClick={handleSaveMySkillsWorkspacePath}
-            disabled={mySkillsWorkspaceBusy}
-            className="app-button-secondary"
-          >
-            {mySkillsWorkspaceSaving ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <CheckCircle2 className="h-3.5 w-3.5" />
-            )}
-            {t("mySkills.myRepo.savePath")}
-          </button>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-          <p className="truncate text-[11px] text-faint" title={mySkillsWorkspaceStatus?.path || ""}>
-            {mySkillsWorkspaceStatus?.path
-              ? t("mySkills.myRepo.currentPath", { path: mySkillsWorkspaceStatus.path })
-              : t("mySkills.myRepo.currentPathMissing")}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {(["pull", "update", "push"] as MySkillsWorkspaceAction[]).map((action) => (
+        {!mySkillsWorkspaceCollapsed ? (
+          <>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <input
+                value={mySkillsWorkspacePath}
+                onChange={(e) => setMySkillsWorkspacePath(e.target.value)}
+                placeholder={t("mySkills.myRepo.pathPlaceholder")}
+                className="app-input min-w-[260px] flex-1 text-[12px]"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+              />
               <button
-                key={action}
                 type="button"
-                onClick={() =>
-                  action === "push"
-                    ? handleRunMySkillsWorkspaceAction(action)
-                    : setMySkillsWorkspaceConfirm(action)
-                }
-                disabled={!mySkillsWorkspaceAvailable || mySkillsWorkspaceBusy}
+                onClick={handleBrowseMySkillsWorkspace}
+                disabled={mySkillsWorkspaceBusy}
                 className="app-button-secondary"
               >
-                {mySkillsWorkspaceAction === action ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : action === "pull" ? (
-                  <RotateCcw className="h-3.5 w-3.5" />
-                ) : action === "update" ? (
-                  <RefreshCw className="h-3.5 w-3.5" />
-                ) : (
-                  <ArrowUpCircle className="h-3.5 w-3.5" />
-                )}
-                {mySkillsActionLabel(action)}
+                <FolderOpen className="h-3.5 w-3.5" />
+                {t("mySkills.myRepo.browse")}
               </button>
-            ))}
-          </div>
-        </div>
+              <button
+                type="button"
+                onClick={handleSaveMySkillsWorkspacePath}
+                disabled={mySkillsWorkspaceBusy}
+                className="app-button-secondary"
+              >
+                {mySkillsWorkspaceSaving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                )}
+                {t("mySkills.myRepo.savePath")}
+              </button>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="truncate text-[11px] text-faint" title={mySkillsWorkspaceStatus?.path || ""}>
+                {mySkillsWorkspaceStatus?.path
+                  ? t("mySkills.myRepo.currentPath", { path: mySkillsWorkspaceStatus.path })
+                  : t("mySkills.myRepo.currentPathMissing")}
+              </p>
+            </div>
+
+            <div className="mt-3 rounded-lg border border-border-subtle bg-background/60 p-3">
+              <div className="flex items-start gap-2">
+                <Globe className="mt-0.5 h-3.5 w-3.5 text-accent-light" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12px] font-medium text-secondary">
+                    {t("mySkills.myRepo.linkImportTitle")}
+                  </p>
+                  <p className="mt-1 text-[11px] text-muted">
+                    {t("mySkills.myRepo.linkImportDescription")}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  value={mySkillsImportUrl}
+                  onChange={(e) => setMySkillsImportUrl(e.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && mySkillsImportUrl.trim() && !mySkillsWorkspaceBusy) {
+                      void handleRunMySkillsLinkImport();
+                    }
+                  }}
+                  placeholder={t("mySkills.myRepo.linkImportPlaceholder")}
+                  className="app-input min-w-[260px] flex-1 text-[12px]"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  onClick={handleRunMySkillsLinkImport}
+                  disabled={!mySkillsWorkspaceAvailable || mySkillsWorkspaceBusy || !mySkillsImportUrl.trim()}
+                  className="app-button-secondary"
+                >
+                  {mySkillsImporting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="h-3.5 w-3.5" />
+                  )}
+                  {mySkillsImporting
+                    ? t("mySkills.myRepo.linkImportRunning")
+                    : t("mySkills.myRepo.linkImportButton")}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+              <div className="flex flex-wrap gap-2">
+                {(["pull", "update", "push"] as MySkillsWorkspaceAction[]).map((action) => (
+                  <button
+                    key={action}
+                    type="button"
+                    onClick={() =>
+                      action === "push"
+                        ? handleRunMySkillsWorkspaceAction(action)
+                        : setMySkillsWorkspaceConfirm(action)
+                    }
+                    disabled={!mySkillsWorkspaceAvailable || mySkillsWorkspaceBusy}
+                    className="app-button-secondary"
+                  >
+                    {mySkillsWorkspaceAction === action ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : action === "pull" ? (
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    ) : action === "update" ? (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    ) : (
+                      <ArrowUpCircle className="h-3.5 w-3.5" />
+                    )}
+                    {mySkillsActionLabel(action)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center gap-1 px-1 -mt-2 -mb-3">
