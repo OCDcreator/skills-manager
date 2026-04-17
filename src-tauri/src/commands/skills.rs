@@ -782,9 +782,17 @@ pub async fn update_skill(
                 .update_skill_update_status(&skill_id, "updating")
                 .map_err(AppError::db)?;
 
-            let update_result =
-                my_skills_repo::sync_skill_from_workspace_source(&store, &skill, &workspace_source)
-                    .map_err(AppError::io);
+            let update_result = (|| -> Result<bool, AppError> {
+                let content_changed =
+                    my_skills_repo::sync_skill_from_workspace_source(&store, &skill, &workspace_source)
+                        .map_err(AppError::io)?;
+                my_skills_repo::import_missing_workspace_skills(
+                    &store,
+                    &workspace_source.workspace_root,
+                )
+                .map_err(AppError::io)?;
+                Ok(content_changed)
+            })();
 
             return match update_result {
                 Ok(content_changed) => {
@@ -1280,6 +1288,11 @@ fn check_skill_update_internal(
             if let Some(workspace_source) =
                 my_skills_repo::resolve_workspace_source(store, &skill).map_err(AppError::io)?
             {
+                my_skills_repo::import_missing_workspace_skills(
+                    store,
+                    &workspace_source.workspace_root,
+                )
+                .map_err(AppError::io)?;
                 let local_hash =
                     content_hash::hash_directory(&workspace_source.skill_dir).map_err(AppError::io)?;
                 let content_changed = skill.content_hash.as_deref() != Some(local_hash.as_str());

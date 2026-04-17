@@ -1,13 +1,13 @@
 # Autopilot Lane Map
 
 > **Preset**: `Maintainability / Refactor`
-> **Current `[NEXT]`**: `R1 - Fix repo-source sibling skill refresh after upstream adds new SKILL.md directories`
+> **Current `[NEXT]`**: `R2 - Follow-up maintainability / refactor slice`
 
 ## Current priority
 
 - Keep the queue bounded and repo-specific
-- First fix the repo-source sibling-skill refresh bug in the downstream enhancement flow
-- Then reduce one maintainability hotspot at a time
+- Keep the repo-source sibling-skill refresh fix stable in the downstream enhancement flow
+- Reduce one maintainability hotspot at a time
 - Keep configured validation commands green
 
 ## Suggested entrypoints

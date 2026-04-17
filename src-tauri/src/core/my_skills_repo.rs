@@ -126,6 +126,7 @@ impl MySkillsWorkspaceAction {
 
 #[derive(Debug, Clone)]
 pub struct MySkillsWorkspaceSource {
+    pub workspace_root: PathBuf,
     pub skill_dir: PathBuf,
     pub revision: String,
 }
@@ -196,13 +197,13 @@ pub fn run_workspace_action(
         );
     }
 
-    let refreshed_skills = refresh_managed_skills_from_workspace(store, &workspace)?;
+    let sync_summary = sync_workspace_after_change(store, &workspace)?;
     let status = git_backup::get_status(&workspace)?;
 
     Ok(MySkillsWorkspaceActionResult {
         action: action.as_str().to_string(),
         path: workspace.to_string_lossy().to_string(),
-        refreshed_skills,
+        refreshed_skills: sync_summary.refreshed_skills,
         status: report.status.as_str().to_string(),
         detail: report.detail,
         branch: status.branch,
@@ -284,12 +285,8 @@ pub fn finalize_link_import(
         &after_paths,
     )?;
 
-    let refreshed_skills = refresh_managed_skills_from_workspace(store, &prepared.workspace)?;
-    let import_summary = import_new_skills_from_workspace(
-        store,
-        &prepared.workspace,
-        &prepared.before_paths,
-    )?;
+    let sync_summary = sync_workspace_after_change(store, &prepared.workspace)?;
+    let import_summary = sync_summary.import_summary;
 
     Ok(MySkillsWorkspaceLinkImportResult {
         path: prepared.workspace.to_string_lossy().to_string(),
@@ -297,7 +294,7 @@ pub fn finalize_link_import(
         runner: "OpenCode".to_string(),
         status: report.status.as_str().to_string(),
         detail: report.detail,
-        refreshed_skills,
+        refreshed_skills: sync_summary.refreshed_skills,
         imported_skills: import_summary.imported,
         skipped_skills: import_summary.skipped,
         imported_names: import_summary.imported_names,
@@ -351,7 +348,11 @@ pub fn resolve_workspace_source(
     let revision = git_fetcher::get_head_revision(&workspace_root)
         .with_context(|| format!("Failed to read My Skills revision from {}", workspace_root.display()))?;
 
-    Ok(Some(MySkillsWorkspaceSource { skill_dir, revision }))
+    Ok(Some(MySkillsWorkspaceSource {
+        workspace_root,
+        skill_dir,
+        revision,
+    }))
 }
 
 pub fn sync_skill_from_workspace_source(
@@ -1174,11 +1175,16 @@ fn refresh_managed_skills_from_workspace(store: &SkillStore, workspace: &Path) -
     Ok(refreshed)
 }
 
-struct WorkspaceImportSummary {
+pub(crate) struct WorkspaceImportSummary {
     imported: usize,
     skipped: usize,
     imported_names: Vec<String>,
     errors: Vec<String>,
+}
+
+struct WorkspaceSyncSummary {
+    refreshed_skills: usize,
+    import_summary: WorkspaceImportSummary,
 }
 
 struct WorkspaceInstallMetadata {
@@ -1192,10 +1198,16 @@ struct WorkspaceInstallMetadata {
     update_status: String,
 }
 
-fn import_new_skills_from_workspace(
+fn sync_workspace_after_change(store: &SkillStore, workspace: &Path) -> Result<WorkspaceSyncSummary> {
+    Ok(WorkspaceSyncSummary {
+        refreshed_skills: refresh_managed_skills_from_workspace(store, workspace)?,
+        import_summary: import_missing_workspace_skills(store, workspace)?,
+    })
+}
+
+pub(crate) fn import_missing_workspace_skills(
     store: &SkillStore,
     workspace: &Path,
-    before_paths: &BTreeSet<String>,
 ) -> Result<WorkspaceImportSummary> {
     let revision = git_fetcher::get_head_revision(workspace)
         .with_context(|| format!("Failed to resolve My Skills revision from {}", workspace.display()))?;
@@ -1205,14 +1217,7 @@ fn import_new_skills_from_workspace(
     let mut imported_names = Vec::new();
     let mut errors = Vec::new();
 
-    for dir in collect_workspace_skill_dirs(workspace) {
-        let Some(subpath) = path_key(workspace, &dir) else {
-            continue;
-        };
-        if before_paths.contains(&subpath) {
-            continue;
-        }
-
+    for (dir, subpath) in collect_untracked_workspace_skill_dirs(store, workspace)? {
         let name = skill_metadata::infer_skill_name(&dir);
         match installer::install_from_local(&dir, Some(&name)) {
             Ok(result) => {
@@ -1248,6 +1253,30 @@ fn import_new_skills_from_workspace(
         imported_names,
         errors,
     })
+}
+
+fn tracked_workspace_skill_paths(store: &SkillStore) -> Result<BTreeSet<String>> {
+    Ok(store
+        .get_all_skills()?
+        .into_iter()
+        .filter(is_my_skills_skill)
+        .filter_map(|skill| skill.source_subpath)
+        .collect())
+}
+
+fn collect_untracked_workspace_skill_dirs(
+    store: &SkillStore,
+    workspace: &Path,
+) -> Result<Vec<(PathBuf, String)>> {
+    let tracked_paths = tracked_workspace_skill_paths(store)?;
+
+    Ok(collect_workspace_skill_dirs(workspace)
+        .into_iter()
+        .filter_map(|dir| {
+            let subpath = path_key(workspace, &dir)?;
+            (!tracked_paths.contains(&subpath)).then_some((dir, subpath))
+        })
+        .collect())
 }
 
 enum ImportStoreResult {
@@ -1545,6 +1574,40 @@ mod tests {
         std::fs::write(skill_dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
     }
 
+    fn make_store() -> (tempfile::TempDir, SkillStore) {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("skills-manager.db");
+        let store = SkillStore::new(&db_path).unwrap();
+        (tmp, store)
+    }
+
+    fn insert_my_skills_record(store: &SkillStore, root: &Path, subpath: &str, name: &str) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let record = SkillRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            description: None,
+            source_type: "git".to_string(),
+            source_ref: Some(MY_SKILLS_REPO_URL.to_string()),
+            source_ref_resolved: Some(MY_SKILLS_REPO_URL.to_string()),
+            source_subpath: Some(subpath.to_string()),
+            source_branch: None,
+            source_revision: Some("rev-1".to_string()),
+            remote_revision: Some("rev-1".to_string()),
+            central_path: root.join(name).to_string_lossy().to_string(),
+            content_hash: None,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+            status: "ok".to_string(),
+            update_status: "up_to_date".to_string(),
+            last_checked_at: Some(now),
+            last_check_error: None,
+        };
+
+        store.insert_skill(&record).unwrap();
+    }
+
     #[test]
     fn detects_my_skills_repo_urls() {
         assert!(is_my_skills_repo_url("https://github.com/OCDcreator/my-skills"));
@@ -1599,6 +1662,26 @@ mod tests {
             tmp.path(),
             Some("https://github.com/OCDcreator/my-skills")
         ));
+    }
+
+    #[test]
+    fn collects_only_untracked_workspace_skill_dirs() {
+        let workspace = tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("custom")).unwrap();
+        std::fs::create_dir_all(workspace.path().join("external")).unwrap();
+        std::fs::write(workspace.path().join("update.sh"), "").unwrap();
+        std::fs::write(workspace.path().join("push.sh"), "").unwrap();
+        std::fs::write(workspace.path().join("pull.sh"), "").unwrap();
+        create_skill(&workspace.path().join("custom"), "tracked-skill");
+        create_skill(&workspace.path().join("external"), "new-skill");
+
+        let (_store_dir, store) = make_store();
+        insert_my_skills_record(&store, workspace.path(), "custom/tracked-skill", "tracked-skill");
+
+        let pending = collect_untracked_workspace_skill_dirs(&store, workspace.path()).unwrap();
+        let pending_paths: Vec<String> = pending.into_iter().map(|(_, subpath)| subpath).collect();
+
+        assert_eq!(pending_paths, vec!["external/new-skill".to_string()]);
     }
 
     #[test]

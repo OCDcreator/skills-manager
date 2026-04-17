@@ -2,7 +2,7 @@
 
 ## Queue
 
-### [NEXT] R1 - Fix repo-source sibling skill refresh after upstream adds new SKILL.md directories
+### [DONE] R1 - Fix repo-source sibling skill refresh after upstream adds new SKILL.md directories
 
 - **Lane**: Repo-source expansion sync
 - **Goal**: When a repo-backed installed skill's upstream source repo gains additional sibling `SKILL.md` directories, make those newly available skills discoverable/importable in Skills Manager without requiring manual reinstall or missing them after “检查全部”.
@@ -30,7 +30,7 @@
   - The phase doc records scope, changed files, and validation results
   - Every configured validation command passes
 
-### [QUEUED] R2 - Follow-up maintainability / refactor slice
+### [NEXT] R2 - Follow-up maintainability / refactor slice
 
 - **Lane**: Maintainability / ownership reduction
 - **Goal**: After the sibling-skill refresh bug is fixed, continue with the next bounded downstream maintainability slice while staying within the same validation baseline.
@@ -52,5 +52,5 @@
 
 ## Current state
 
-- The current `[NEXT]` is `R1 - First maintainability / refactor slice`.
+- The current `[NEXT]` is `R2 - Follow-up maintainability / refactor slice`.
 - Successful rounds must keep the queue synchronized with the phase docs.
