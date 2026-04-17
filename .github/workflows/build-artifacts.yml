@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-artifacts-${{ github.ref }}
@@ -55,3 +55,70 @@ jobs:
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish development release
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEV_RELEASE_TAG: dev-latest
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $assets = @(
+            Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi" -File -ErrorAction SilentlyContinue
+            Get-ChildItem -Path "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe" -File -ErrorAction SilentlyContinue
+          )
+
+          if ($assets.Count -eq 0) {
+            throw "No Windows installer assets found."
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f $env:DEV_RELEASE_TAG $env:GITHUB_SHA
+          git push --force origin "refs/tags/$($env:DEV_RELEASE_TAG)"
+
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $runUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $notes = @"
+          Development build from the latest main branch.
+
+          Commit: $shortSha
+          Workflow run: $runUrl
+
+          This prerelease is overwritten by each push to main.
+          "@
+          Set-Content -Path release-notes.md -Value $notes -Encoding utf8
+
+          gh release view $env:DEV_RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $existingAssetNames = gh release view $env:DEV_RELEASE_TAG `
+              --repo $env:GITHUB_REPOSITORY `
+              --json assets `
+              --jq ".assets[].name"
+
+            foreach ($assetName in $existingAssetNames) {
+              if ($assetName) {
+                gh release delete-asset $env:DEV_RELEASE_TAG $assetName --repo $env:GITHUB_REPOSITORY --yes
+              }
+            }
+
+            gh release edit $env:DEV_RELEASE_TAG `
+              --repo $env:GITHUB_REPOSITORY `
+              --title "Skills Manager dev-latest" `
+              --notes-file release-notes.md `
+              --prerelease `
+              --target $env:GITHUB_SHA
+          } else {
+            gh release create $env:DEV_RELEASE_TAG `
+              --repo $env:GITHUB_REPOSITORY `
+              --title "Skills Manager dev-latest" `
+              --notes-file release-notes.md `
+              --prerelease `
+              --latest=false `
+              --target $env:GITHUB_SHA
+          }
+
+          $assetPaths = $assets | ForEach-Object { $_.FullName }
+          gh release upload $env:DEV_RELEASE_TAG $assetPaths --repo $env:GITHUB_REPOSITORY --clobber
