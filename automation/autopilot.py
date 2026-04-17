@@ -1062,11 +1062,14 @@ def validate_round_result(
             )
 
         build_id = clean_string(result.get("build_id"))
-        if bool(result.get("build_ran")) and not build_id:
-            validation_errors.append("build_ran=true requires a non-empty build_id.")
-
         validated_commit_files = get_commit_files(commit_sha) if commit_sha else []
         deploy_required = test_deploy_required(validated_commit_files, config)
+        deploy_verify_path = clean_string(config.get("deploy_verify_path"))
+
+        if bool(result.get("build_ran")) and (deploy_required or deploy_verify_path) and not build_id:
+            validation_errors.append(
+                "build_ran=true requires a non-empty build_id when deployment or deploy verification is configured."
+            )
 
         if bool(result.get("build_ran")) and deploy_required and not bool(result.get("deploy_ran")):
             validation_errors.append("This round required deployment after build but reported deploy_ran=false.")
@@ -1077,7 +1080,6 @@ def validate_round_result(
         if bool(result.get("deploy_ran")) and not bool(result.get("deploy_verified")):
             validation_errors.append("deploy_ran=true requires deploy_verified=true.")
 
-        deploy_verify_path = clean_string(config.get("deploy_verify_path"))
         if (
             bool(result.get("deploy_ran"))
             and build_id
