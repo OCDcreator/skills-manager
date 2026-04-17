@@ -39,11 +39,27 @@ pub async fn run_my_skills_workspace_action(
 pub async fn run_my_skills_link_import(
     source_url: String,
     store: State<'_, Arc<SkillStore>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<MySkillsWorkspaceLinkImportResult, AppError> {
     let store = store.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        my_skills_repo::run_link_import(&store, &source_url).map_err(AppError::internal)
+        use tauri::Emitter;
+
+        let output_handler: my_skills_repo::LinkImportOutputHandler = Arc::new(move |line| {
+            app_handle
+                .emit(
+                    "my-skills-link-import-output",
+                    serde_json::json!({
+                        "stream": line.stream,
+                        "line": line.line,
+                    }),
+                )
+                .ok();
+        });
+
+        my_skills_repo::run_link_import(&store, &source_url, Some(output_handler))
+            .map_err(AppError::internal)
     })
     .await?
 }

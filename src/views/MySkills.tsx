@@ -26,6 +26,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
@@ -69,6 +70,10 @@ const MY_SKILLS_WORKSPACE_SETTING_KEY = "my_skills_workspace_path";
 const MY_SKILLS_IMPORT_URL_SETTING_KEY = "my_skills_import_source_url";
 const TAG_CATEGORY_ORDER = ["场景:", "来源:", "仓库:", "用途:", "集合:", "风险:"];
 type FilterMode = "all" | "enabled" | "available" | "updates";
+type MySkillsImportLogEvent = {
+  stream: "stdout" | "stderr";
+  line: string;
+};
 
 function normalizeFilterMode(value: string | null): FilterMode {
   if (value === "enabled" || value === "available" || value === "updates") {
@@ -238,6 +243,7 @@ export function MySkills() {
   const [mySkillsWorkspaceConfirm, setMySkillsWorkspaceConfirm] = useState<MySkillsWorkspaceAction | null>(null);
   const [mySkillsImportUrl, setMySkillsImportUrl] = useState("");
   const [mySkillsImporting, setMySkillsImporting] = useState(false);
+  const [mySkillsImportLogLines, setMySkillsImportLogLines] = useState<string[]>([]);
   const [mySkillsWorkspaceCollapsed, setMySkillsWorkspaceCollapsed] = useState(true);
   const [tagEditSkillId, setTagEditSkillId] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState("");
@@ -897,7 +903,20 @@ export function MySkills() {
     if (!trimmed) return;
 
     setMySkillsImporting(true);
+    setMySkillsImportLogLines([]);
+    let unlisten: (() => void) | undefined;
     try {
+      unlisten = await listen<MySkillsImportLogEvent>(
+        "my-skills-link-import-output",
+        (event) => {
+          const { stream, line } = event.payload;
+          const prefix = stream === "stderr" ? "stderr" : "stdout";
+          setMySkillsImportLogLines((prev) => [
+            ...prev.slice(-119),
+            `${prefix}> ${line}`,
+          ]);
+        }
+      );
       await api.setSettings(MY_SKILLS_IMPORT_URL_SETTING_KEY, trimmed).catch(() => {});
       const result = await api.runMySkillsLinkImport(trimmed);
       await Promise.all([
@@ -906,14 +925,20 @@ export function MySkills() {
         refreshMySkillsWorkspaceStatus(),
       ]);
 
+      if (result.detail) {
+        setMySkillsImportLogLines((prev) => [...prev.slice(-119), `DETAIL: ${result.detail}`]);
+      }
+
       if (result.imported_skills > 0) {
         toast.success(
           t("mySkills.myRepo.linkImportSuccess", { count: result.imported_skills })
         );
+      } else if (result.status === "partial") {
+        toast.warning(result.detail || t("mySkills.myRepo.linkImportPartial"));
       } else if (result.status === "no_changes") {
-        toast.info(t("mySkills.myRepo.linkImportNoChanges"));
+        toast.info(result.detail || t("mySkills.myRepo.linkImportNoChanges"));
       } else {
-        toast.success(t("mySkills.myRepo.linkImportFinished"));
+        toast.success(result.detail || t("mySkills.myRepo.linkImportFinished"));
       }
 
       if (result.errors.length > 0) {
@@ -929,6 +954,7 @@ export function MySkills() {
       }
       await refreshMySkillsWorkspaceStatus();
     } finally {
+      unlisten?.();
       setMySkillsImporting(false);
     }
   };
@@ -1485,6 +1511,25 @@ export function MySkills() {
                     : t("mySkills.myRepo.linkImportButton")}
                 </button>
               </div>
+              {(mySkillsImporting || mySkillsImportLogLines.length > 0) ? (
+                <div className="mt-3 rounded-md border border-border-subtle bg-surface/70 p-2">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-medium text-muted">
+                      {t("mySkills.myRepo.linkImportLogTitle")}
+                    </span>
+                    {mySkillsImporting ? (
+                      <span className="text-[11px] text-faint">
+                        {t("mySkills.myRepo.linkImportRunning")}
+                      </span>
+                    ) : null}
+                  </div>
+                  <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded bg-background/80 p-2 text-[11px] leading-relaxed text-muted">
+                    {mySkillsImportLogLines.length > 0
+                      ? mySkillsImportLogLines.join("\n")
+                      : t("mySkills.myRepo.linkImportLogWaiting")}
+                  </pre>
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-3 flex flex-wrap items-center justify-end gap-2">

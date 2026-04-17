@@ -1,9 +1,11 @@
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::thread;
 use walkdir::WalkDir;
 
 use super::{
@@ -56,6 +58,14 @@ pub struct MySkillsWorkspaceLinkImportResult {
     pub remote_url: Option<String>,
     pub has_changes: bool,
 }
+
+#[derive(Debug, Clone)]
+pub struct LinkImportOutputLine {
+    pub stream: &'static str,
+    pub line: String,
+}
+
+pub type LinkImportOutputHandler = Arc<dyn Fn(LinkImportOutputLine) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MySkillsWorkspaceAction {
@@ -173,6 +183,7 @@ pub fn run_workspace_action(
 pub fn run_link_import(
     store: &SkillStore,
     source_url: &str,
+    output_handler: Option<LinkImportOutputHandler>,
 ) -> Result<MySkillsWorkspaceLinkImportResult> {
     let source_url = source_url.trim();
     if source_url.is_empty() {
@@ -185,8 +196,17 @@ pub fn run_link_import(
 
     ensure_workspace_root(&workspace)?;
     let before_paths = workspace_skill_path_set(&workspace);
-    let output = execute_workspace_link_import(&workspace, source_url)?;
+    let before_status = git_backup::get_status(&workspace)?;
+    let before_revision = git_fetcher::get_head_revision(&workspace).ok();
+    let output = execute_workspace_link_import(&workspace, source_url, output_handler)?;
     let report = parse_agent_import_output(&output);
+
+    if !report.saw_result_marker {
+        bail!(
+            "My Skills link import failed: OpenCode finished without the required RESULT line. Output: {}",
+            summarize_output(&output)
+        );
+    }
 
     if !output.status.success() || matches!(report.status, AgentImportStatus::Error) {
         bail!(
@@ -195,9 +215,21 @@ pub fn run_link_import(
         );
     }
 
+    let after_paths = workspace_skill_path_set(&workspace);
+    let status = git_backup::get_status(&workspace)?;
+    let after_revision = git_fetcher::get_head_revision(&workspace).ok();
+    validate_link_import_result(
+        &report,
+        &before_status,
+        before_revision.as_deref(),
+        &before_paths,
+        &status,
+        after_revision.as_deref(),
+        &after_paths,
+    )?;
+
     let refreshed_skills = refresh_managed_skills_from_workspace(store, &workspace)?;
     let import_summary = import_new_skills_from_workspace(store, &workspace, &before_paths)?;
-    let status = git_backup::get_status(&workspace)?;
 
     Ok(MySkillsWorkspaceLinkImportResult {
         path: workspace.to_string_lossy().to_string(),
@@ -475,7 +507,11 @@ fn execute_workspace_script(workspace: &Path, action: MySkillsWorkspaceAction) -
         .with_context(|| format!("Failed to finish My Skills {} script", action.as_str()))
 }
 
-fn execute_workspace_link_import(workspace: &Path, source_url: &str) -> Result<Output> {
+fn execute_workspace_link_import(
+    workspace: &Path,
+    source_url: &str,
+    output_handler: Option<LinkImportOutputHandler>,
+) -> Result<Output> {
     let prompt = build_workspace_link_import_prompt(source_url);
     let mut command = opencode_command();
     command
@@ -492,16 +528,74 @@ fn execute_workspace_link_import(workspace: &Path, source_url: &str) -> Result<O
         .stderr(Stdio::piped())
         .env("NO_COLOR", "1");
 
-    let child = command.spawn().with_context(|| {
+    let mut child = command.spawn().with_context(|| {
         format!(
             "Failed to start OpenCode in {}. Make sure `opencode` is installed and configured.",
             workspace.display()
         )
     })?;
 
-    child
-        .wait_with_output()
-        .with_context(|| format!("Failed to finish OpenCode import in {}", workspace.display()))
+    let stdout_handle = child
+        .stdout
+        .take()
+        .map(|stdout| spawn_output_reader(stdout, "stdout", output_handler.clone()));
+    let stderr_handle = child
+        .stderr
+        .take()
+        .map(|stderr| spawn_output_reader(stderr, "stderr", output_handler));
+
+    let status = child
+        .wait()
+        .with_context(|| format!("Failed to finish OpenCode import in {}", workspace.display()))?;
+    let stdout = join_output_reader(stdout_handle);
+    let stderr = join_output_reader(stderr_handle);
+
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn spawn_output_reader<R>(
+    reader: R,
+    stream: &'static str,
+    output_handler: Option<LinkImportOutputHandler>,
+) -> thread::JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut collected = Vec::new();
+
+        loop {
+            let mut chunk = Vec::new();
+            match reader.read_until(b'\n', &mut chunk) {
+                Ok(0) => break,
+                Ok(_) => {
+                    collected.extend_from_slice(&chunk);
+                    if let Some(handler) = output_handler.as_ref() {
+                        let line = String::from_utf8_lossy(&chunk)
+                            .trim_end_matches(['\r', '\n'])
+                            .to_string();
+                        if !line.trim().is_empty() {
+                            handler(LinkImportOutputLine { stream, line });
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        collected
+    })
+}
+
+fn join_output_reader(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default()
 }
 
 fn opencode_command() -> Command {
@@ -718,6 +812,7 @@ impl AgentImportStatus {
 struct AgentImportReport {
     status: AgentImportStatus,
     detail: Option<String>,
+    saw_result_marker: bool,
 }
 
 fn parse_workspace_script_output(output: &Output) -> WorkspaceScriptReport {
@@ -761,10 +856,12 @@ fn parse_agent_import_output(output: &Output) -> AgentImportReport {
         AgentImportStatus::Error
     };
     let mut detail = None;
+    let mut saw_result_marker = false;
 
     for line in stdout.lines().chain(stderr.lines()) {
         let trimmed = line.trim();
         if let Some(value) = trimmed.strip_prefix("RESULT:") {
+            saw_result_marker = true;
             status = classify_agent_import_status(value.trim(), status);
         }
         if let Some(value) = trimmed.strip_prefix("DETAIL:") {
@@ -782,7 +879,55 @@ fn parse_agent_import_output(output: &Output) -> AgentImportReport {
         }
     }
 
-    AgentImportReport { status, detail }
+    AgentImportReport {
+        status,
+        detail,
+        saw_result_marker,
+    }
+}
+
+fn validate_link_import_result(
+    report: &AgentImportReport,
+    before_status: &git_backup::GitBackupStatus,
+    before_revision: Option<&str>,
+    before_paths: &BTreeSet<String>,
+    after_status: &git_backup::GitBackupStatus,
+    after_revision: Option<&str>,
+    after_paths: &BTreeSet<String>,
+) -> Result<()> {
+    let head_changed = before_revision != after_revision;
+    let skill_paths_changed = before_paths != after_paths;
+    let dirty_state_changed = before_status.has_changes != after_status.has_changes;
+    let visible_change = head_changed || skill_paths_changed || dirty_state_changed;
+
+    if matches!(report.status, AgentImportStatus::Success | AgentImportStatus::Partial)
+        && !visible_change
+    {
+        bail!(
+            "OpenCode reported success but my-skills did not change. The import was not committed or no files were added."
+        );
+    }
+
+    if !before_status.has_changes && after_status.has_changes {
+        bail!(
+            "OpenCode left my-skills with uncommitted changes. Please inspect the workspace before importing."
+        );
+    }
+
+    if after_status.ahead > before_status.ahead {
+        bail!(
+            "OpenCode created local commit(s) but did not push them to origin. Please push my-skills before importing."
+        );
+    }
+
+    if matches!(report.status, AgentImportStatus::Success | AgentImportStatus::Partial)
+        && (head_changed || skill_paths_changed)
+        && after_status.remote_url.is_none()
+    {
+        bail!("OpenCode updated my-skills, but no origin remote is configured, so push cannot be verified.");
+    }
+
+    Ok(())
 }
 
 fn classify_workspace_script_status(
@@ -1251,6 +1396,36 @@ mod tests {
             no_changes_report.detail.as_deref(),
             Some("没有检测到新的变更，所以这次无需提交和推送。")
         );
+    }
+
+    #[test]
+    fn parses_agent_import_result_marker() {
+        let output = Output {
+            status: success_status(),
+            stdout: "RESULT: success\nDETAIL: 已导入并推送。\n".into(),
+            stderr: Vec::new(),
+        };
+
+        let report = parse_agent_import_output(&output);
+
+        assert!(report.saw_result_marker);
+        assert_eq!(report.status, AgentImportStatus::Success);
+        assert_eq!(report.detail.as_deref(), Some("已导入并推送。"));
+    }
+
+    #[test]
+    fn detects_missing_agent_import_result_marker() {
+        let output = Output {
+            status: success_status(),
+            stdout: "OpenCode says it is done.\n".into(),
+            stderr: Vec::new(),
+        };
+
+        let report = parse_agent_import_output(&output);
+
+        assert!(!report.saw_result_marker);
+        assert_eq!(report.status, AgentImportStatus::Success);
+        assert_eq!(report.detail.as_deref(), Some("OpenCode says it is done."));
     }
 
     #[cfg(target_os = "windows")]
