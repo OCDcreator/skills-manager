@@ -30,7 +30,7 @@
   - The phase doc records scope, changed files, and validation results
   - Every configured validation command passes
 
-### [NEXT] R2 - Follow-up maintainability / refactor slice
+### [DONE] R2 - Follow-up maintainability / refactor slice
 
 - **Lane**: Maintainability / ownership reduction
 - **Goal**: After the sibling-skill refresh bug is fixed, continue with the next bounded downstream maintainability slice while staying within the same validation baseline.
@@ -40,7 +40,7 @@
 - **Acceptance**:
   - Another queued slice lands with validations green
 
-### [QUEUED] R3 - Checkpoint after first refactor batch
+### [NEXT] R3 - Checkpoint after first refactor batch
 
 - **Lane**: Checkpoint
 - **Goal**: Review R1-R2, document what ownership actually moved, and decide whether the preset queue should stop or be manually extended.
@@ -52,5 +52,5 @@
 
 ## Current state
 
-- The current `[NEXT]` is `R2 - Follow-up maintainability / refactor slice`.
+- The current `[NEXT]` is `R3 - Checkpoint after first refactor batch`.
 - Successful rounds must keep the queue synchronized with the phase docs.

@@ -1,7 +1,7 @@
 # Autopilot Lane Map
 
 > **Preset**: `Maintainability / Refactor`
-> **Current `[NEXT]`**: `R2 - Follow-up maintainability / refactor slice`
+> **Current `[NEXT]`**: `R3 - Checkpoint after first refactor batch`
 
 ## Current priority
 

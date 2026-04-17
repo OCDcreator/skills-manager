@@ -775,43 +775,15 @@ pub async fn update_skill(
             ));
         }
 
-        if let Some(workspace_source) =
-            my_skills_repo::resolve_workspace_source(&store, &skill).map_err(AppError::io)?
+        if let Some(content_changed) =
+            my_skills_repo::update_skill_from_workspace_if_available(&store, &skill)
+                .map_err(AppError::io)?
         {
-            store
-                .update_skill_update_status(&skill_id, "updating")
-                .map_err(AppError::db)?;
-
-            let update_result = (|| -> Result<bool, AppError> {
-                let content_changed =
-                    my_skills_repo::sync_skill_from_workspace_source(&store, &skill, &workspace_source)
-                        .map_err(AppError::io)?;
-                my_skills_repo::import_missing_workspace_skills(
-                    &store,
-                    &workspace_source.workspace_root,
-                )
-                .map_err(AppError::io)?;
-                Ok(content_changed)
-            })();
-
-            return match update_result {
-                Ok(content_changed) => {
-                    let skill = managed_skill_by_id(&store, &skill_id)?;
-                    Ok(UpdateSkillResult {
-                        skill,
-                        content_changed,
-                    })
-                }
-                Err(e) => {
-                    let _ = store.update_skill_check_state(
-                        &skill_id,
-                        Some(&workspace_source.revision),
-                        "error",
-                        Some(&e.message),
-                    );
-                    Err(e)
-                }
-            };
+            let skill = managed_skill_by_id(&store, &skill_id)?;
+            return Ok(UpdateSkillResult {
+                skill,
+                content_changed,
+            });
         }
 
         let git_source = git_source_from_skill(&skill)?;
@@ -853,8 +825,7 @@ pub async fn update_skill(
 
             // Compare content hash before and after to detect no-op updates
             // (e.g. monorepo commit that didn't change this skill's subdirectory).
-            let new_hash =
-                crate::core::content_hash::hash_directory(&skill_dir).map_err(AppError::io)?;
+            let new_hash = content_hash::hash_directory(&skill_dir).map_err(AppError::io)?;
             let content_changed = skill.content_hash.as_deref() != Some(new_hash.as_str());
 
             let source_subpath = git_fetcher::relative_subpath(&temp_dir, &skill_dir);
@@ -1285,40 +1256,9 @@ fn check_skill_update_internal(
                     .map_err(AppError::db)?;
             }
 
-            if let Some(workspace_source) =
-                my_skills_repo::resolve_workspace_source(store, &skill).map_err(AppError::io)?
+            if my_skills_repo::check_workspace_update_if_available(store, &skill)
+                .map_err(AppError::io)?
             {
-                my_skills_repo::import_missing_workspace_skills(
-                    store,
-                    &workspace_source.workspace_root,
-                )
-                .map_err(AppError::io)?;
-                let local_hash =
-                    content_hash::hash_directory(&workspace_source.skill_dir).map_err(AppError::io)?;
-                let content_changed = skill.content_hash.as_deref() != Some(local_hash.as_str());
-
-                store
-                    .update_skill_source_metadata(
-                        &skill.id,
-                        skill.source_ref_resolved.as_deref(),
-                        skill.source_subpath.as_deref(),
-                        skill.source_branch.as_deref(),
-                        Some(&workspace_source.revision),
-                    )
-                    .map_err(AppError::db)?;
-
-                store
-                    .update_skill_check_state(
-                        &skill.id,
-                        Some(&workspace_source.revision),
-                        if content_changed {
-                            "update_available"
-                        } else {
-                            "up_to_date"
-                        },
-                        None,
-                    )
-                    .map_err(AppError::db)?;
                 return managed_skill_by_id(store, skill_id);
             }
 

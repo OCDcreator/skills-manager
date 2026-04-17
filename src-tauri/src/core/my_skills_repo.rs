@@ -355,12 +355,69 @@ pub fn resolve_workspace_source(
     }))
 }
 
-pub fn sync_skill_from_workspace_source(
+pub(crate) fn update_skill_from_workspace_if_available(
     store: &SkillStore,
     skill: &SkillRecord,
-    source: &MySkillsWorkspaceSource,
+) -> Result<Option<bool>> {
+    let Some(source) = resolve_workspace_source(store, skill)? else {
+        return Ok(None);
+    };
+
+    store.update_skill_update_status(&skill.id, "updating")?;
+    let update_result = (|| -> Result<bool> {
+        let content_changed =
+            sync_skill_from_workspace(store, skill, &source.skill_dir, &source.revision)?;
+        import_missing_workspace_skills(store, &source.workspace_root)?;
+        Ok(content_changed)
+    })();
+
+    match update_result {
+        Ok(content_changed) => Ok(Some(content_changed)),
+        Err(err) => {
+            let message = err.to_string();
+            let _ = store.update_skill_check_state(
+                &skill.id,
+                Some(&source.revision),
+                "error",
+                Some(&message),
+            );
+            Err(err)
+        }
+    }
+}
+
+pub(crate) fn check_workspace_update_if_available(
+    store: &SkillStore,
+    skill: &SkillRecord,
 ) -> Result<bool> {
-    sync_skill_from_workspace(store, skill, &source.skill_dir, &source.revision)
+    let Some(source) = resolve_workspace_source(store, skill)? else {
+        return Ok(false);
+    };
+
+    import_missing_workspace_skills(store, &source.workspace_root)?;
+    let local_hash = content_hash::hash_directory(&source.skill_dir)?;
+    let content_changed = skill.content_hash.as_deref() != Some(local_hash.as_str());
+
+    store.update_skill_source_metadata(
+        &skill.id,
+        skill.source_ref_resolved.as_deref(),
+        skill.source_subpath.as_deref(),
+        skill.source_branch.as_deref(),
+        Some(&source.revision),
+    )?;
+
+    store.update_skill_check_state(
+        &skill.id,
+        Some(&source.revision),
+        if content_changed {
+            "update_available"
+        } else {
+            "up_to_date"
+        },
+        None,
+    )?;
+
+    Ok(true)
 }
 
 pub fn is_my_skills_collection_root(path: &Path, repo_url: Option<&str>) -> bool {
@@ -1205,7 +1262,7 @@ fn sync_workspace_after_change(store: &SkillStore, workspace: &Path) -> Result<W
     })
 }
 
-pub(crate) fn import_missing_workspace_skills(
+fn import_missing_workspace_skills(
     store: &SkillStore,
     workspace: &Path,
 ) -> Result<WorkspaceImportSummary> {
