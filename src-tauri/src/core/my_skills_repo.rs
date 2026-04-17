@@ -477,7 +477,7 @@ fn execute_workspace_script(workspace: &Path, action: MySkillsWorkspaceAction) -
 
 fn execute_workspace_link_import(workspace: &Path, source_url: &str) -> Result<Output> {
     let prompt = build_workspace_link_import_prompt(source_url);
-    let mut command = Command::new("opencode");
+    let mut command = opencode_command();
     command
         .arg("run")
         .arg("--dir")
@@ -502,6 +502,102 @@ fn execute_workspace_link_import(workspace: &Path, source_url: &str) -> Result<O
     child
         .wait_with_output()
         .with_context(|| format!("Failed to finish OpenCode import in {}", workspace.display()))
+}
+
+fn opencode_command() -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let mut command = Command::new("cmd");
+        command.creation_flags(0x08000000);
+        command.arg("/C");
+        if let Some(program) = find_windows_opencode_program() {
+            command.arg(program);
+        } else {
+            command.arg("opencode");
+        }
+        inject_opencode_search_path(&mut command);
+        command
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut command = Command::new("opencode");
+        inject_opencode_search_path(&mut command);
+        command
+    }
+}
+
+fn inject_opencode_search_path(command: &mut Command) {
+    let extra_paths = opencode_search_paths();
+    if extra_paths.is_empty() {
+        return;
+    }
+
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&existing).collect();
+    let mut changed = false;
+
+    for path in extra_paths {
+        if path.is_dir() && !paths.iter().any(|existing_path| existing_path == &path) {
+            paths.insert(0, path);
+            changed = true;
+        }
+    }
+
+    if changed {
+        if let Ok(joined) = std::env::join_paths(paths) {
+            command.env("PATH", joined);
+        }
+    }
+}
+
+fn opencode_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            paths.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            paths.push(PathBuf::from(local_app_data).join("pnpm"));
+        }
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".bun").join("bin"));
+            paths.push(home.join("scoop").join("shims"));
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(home) = dirs::home_dir() {
+            paths.push(home.join(".bun").join("bin"));
+            paths.push(home.join(".local").join("bin"));
+        }
+    }
+
+    paths
+}
+
+#[cfg(target_os = "windows")]
+fn find_windows_opencode_program() -> Option<PathBuf> {
+    find_windows_opencode_program_in_dirs(&opencode_search_paths())
+}
+
+#[cfg(target_os = "windows")]
+fn find_windows_opencode_program_in_dirs(paths: &[PathBuf]) -> Option<PathBuf> {
+    let candidates = ["opencode.cmd", "opencode.exe", "opencode.bat"];
+    for dir in paths {
+        for candidate in candidates {
+            let full_path = dir.join(candidate);
+            if full_path.is_file() {
+                return Some(full_path);
+            }
+        }
+    }
+    None
 }
 
 fn script_path_for_action(workspace: &Path, action: MySkillsWorkspaceAction) -> Option<PathBuf> {
@@ -1155,6 +1251,20 @@ mod tests {
             no_changes_report.detail.as_deref(),
             Some("没有检测到新的变更，所以这次无需提交和推送。")
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn finds_windows_opencode_wrapper_in_common_dirs() {
+        let tmp = tempdir().unwrap();
+        let npm_dir = tmp.path().join("npm");
+        std::fs::create_dir_all(&npm_dir).unwrap();
+        let wrapper = npm_dir.join("opencode.cmd");
+        std::fs::write(&wrapper, "@echo off\r\n").unwrap();
+
+        let found = find_windows_opencode_program_in_dirs(&[npm_dir]);
+
+        assert_eq!(found.as_deref(), Some(wrapper.as_path()));
     }
 
     #[cfg(target_os = "windows")]
