@@ -21,9 +21,13 @@ import {
   SquareCheck,
   Square,
   GripVertical,
+  FolderOpen,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
@@ -34,10 +38,13 @@ import { MultiSelectToolbar } from "../components/MultiSelectToolbar";
 import * as api from "../lib/tauri";
 import type {
   ManagedSkill,
+  ScenarioAgentSummary,
   ToolInfo,
   GitBackupStatus,
   GitBackupVersion,
   SkillToolToggle,
+  MySkillsWorkspaceAction,
+  MySkillsWorkspaceStatus,
 } from "../lib/tauri";
 import { getErrorMessage, getErrorKind } from "../lib/error";
 import {
@@ -57,6 +64,76 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+
+const MY_SKILLS_WORKSPACE_SETTING_KEY = "my_skills_workspace_path";
+const MY_SKILLS_IMPORT_URL_SETTING_KEY = "my_skills_import_source_url";
+const TAG_CATEGORY_ORDER = ["场景:", "来源:", "仓库:", "用途:", "集合:", "风险:"];
+type FilterMode = "all" | "enabled" | "available" | "updates";
+
+function normalizeFilterMode(value: string | null): FilterMode {
+  if (value === "enabled" || value === "available" || value === "updates") {
+    return value;
+  }
+  return "all";
+}
+
+function tagCategory(tag: string) {
+  return TAG_CATEGORY_ORDER.find((prefix) => tag.startsWith(prefix)) ?? "其他";
+}
+
+function sortTagsByCategory(tags: string[]) {
+  return [...tags].sort((a, b) => {
+    const aCategory = tagCategory(a);
+    const bCategory = tagCategory(b);
+    const aIndex = TAG_CATEGORY_ORDER.indexOf(aCategory);
+    const bIndex = TAG_CATEGORY_ORDER.indexOf(bCategory);
+    const normalizedA = aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex;
+    const normalizedB = bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex;
+
+    if (normalizedA !== normalizedB) {
+      return normalizedA - normalizedB;
+    }
+
+    return a.localeCompare(b, "zh-Hans-CN");
+  });
+}
+
+function tagToneClasses(tag: string, active = false) {
+  const category = tagCategory(tag);
+  const tones: Record<string, { idle: string; active: string }> = {
+    "场景:": {
+      idle: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+      active: "bg-emerald-500 text-white dark:bg-emerald-500",
+    },
+    "来源:": {
+      idle: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+      active: "bg-amber-500 text-white dark:bg-amber-500",
+    },
+    "仓库:": {
+      idle: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
+      active: "bg-blue-500 text-white dark:bg-blue-500",
+    },
+    "用途:": {
+      idle: "bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-400",
+      active: "bg-fuchsia-500 text-white dark:bg-fuchsia-500",
+    },
+    "集合:": {
+      idle: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
+      active: "bg-cyan-500 text-white dark:bg-cyan-500",
+    },
+    "风险:": {
+      idle: "bg-rose-500/15 text-rose-600 dark:text-rose-400",
+      active: "bg-rose-500 text-white dark:bg-rose-500",
+    },
+    "其他": {
+      idle: "bg-surface-hover text-muted",
+      active: "bg-accent text-white dark:bg-accent",
+    },
+  };
+
+  const tone = tones[category] ?? tones["其他"];
+  return active ? tone.active : tone.idle;
+}
 
 interface SortableSkillItemProps {
   id: string;
@@ -112,8 +189,15 @@ function displaySnapshotLabel(tag: string) {
   return `${parts[0]}-${parts[1]}`;
 }
 
+function isMissingTauriCommand(error: unknown, commandName: string) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = message.toLowerCase();
+  return normalized.includes(commandName.toLowerCase()) && normalized.includes("not found");
+}
+
 export function MySkills() {
   const { t } = useTranslation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     activeScenario,
     tools,
@@ -125,7 +209,7 @@ export function MySkills() {
     closeSkillDetail,
   } = useApp();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
-  const [filterMode, setFilterMode] = useState<"all" | "enabled" | "available">("all");
+  const [filterMode, setFilterMode] = useState<FilterMode>(() => normalizeFilterMode(searchParams.get("filter")));
   const [sourceFilters, setSourceFilters] = useState<Set<string>>(new Set());
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
   const [allTags, setAllTags] = useState<string[]>([]);
@@ -133,6 +217,7 @@ export function MySkills() {
   const [deleteTarget, setDeleteTarget] = useState<ManagedSkill | null>(null);
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
   const [checkingAll, setCheckingAll] = useState(false);
+  const [updatingAll, setUpdatingAll] = useState(false);
   const [checkingSkillId, setCheckingSkillId] = useState<string | null>(null);
   const [updatingSkillId, setUpdatingSkillId] = useState<string | null>(null);
   const [toolToggles, setToolToggles] = useState<SkillToolToggle[] | null>(null);
@@ -145,6 +230,15 @@ export function MySkills() {
   const [gitVersions, setGitVersions] = useState<GitBackupVersion[]>([]);
   const [restoreVersionTag, setRestoreVersionTag] = useState<string | null>(null);
   const [restoringVersionTag, setRestoringVersionTag] = useState<string | null>(null);
+  const [scenarioAgentSummary, setScenarioAgentSummary] = useState<ScenarioAgentSummary | null>(null);
+  const [mySkillsWorkspaceStatus, setMySkillsWorkspaceStatus] = useState<MySkillsWorkspaceStatus | null>(null);
+  const [mySkillsWorkspacePath, setMySkillsWorkspacePath] = useState("");
+  const [mySkillsWorkspaceSaving, setMySkillsWorkspaceSaving] = useState(false);
+  const [mySkillsWorkspaceAction, setMySkillsWorkspaceAction] = useState<MySkillsWorkspaceAction | null>(null);
+  const [mySkillsWorkspaceConfirm, setMySkillsWorkspaceConfirm] = useState<MySkillsWorkspaceAction | null>(null);
+  const [mySkillsImportUrl, setMySkillsImportUrl] = useState("");
+  const [mySkillsImporting, setMySkillsImporting] = useState(false);
+  const [mySkillsWorkspaceCollapsed, setMySkillsWorkspaceCollapsed] = useState(true);
   const [tagEditSkillId, setTagEditSkillId] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState("");
   const tagInputRef = useRef<HTMLInputElement>(null);
@@ -162,6 +256,30 @@ export function MySkills() {
     api.getScenarioSkillOrder(activeScenario.id).then(setScenarioSkillOrder).catch(() => {});
   }, [activeScenario, skills]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeScenario) {
+      setScenarioAgentSummary(null);
+      return;
+    }
+
+    api.getScenarioAgentSummary(activeScenario.id)
+      .then((summary) => {
+        if (!cancelled) {
+          setScenarioAgentSummary(summary);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setScenarioAgentSummary(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeScenario, skills]);
+
   const refreshAllTags = async () => {
     try {
       const tags = await api.getAllTags();
@@ -175,11 +293,29 @@ export function MySkills() {
     refreshAllTags();
   }, [skills]);
 
+  useEffect(() => {
+    const nextMode = normalizeFilterMode(searchParams.get("filter"));
+    setFilterMode((current) => (current === nextMode ? current : nextMode));
+  }, [searchParams]);
+
   const toggleFilter = (set: Set<string>, value: string): Set<string> => {
     const next = new Set(set);
     if (next.has(value)) next.delete(value);
     else next.add(value);
     return next;
+  };
+
+  const handleFilterModeChange = (mode: FilterMode) => {
+    setFilterMode(mode);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (mode === "all") {
+        next.delete("filter");
+      } else {
+        next.set("filter", mode);
+      }
+      return next;
+    }, { replace: true });
   };
 
   const filtered = useMemo(() => {
@@ -192,6 +328,8 @@ export function MySkills() {
       if (sourceFilters.size > 0 && !sourceFilters.has(skill.source_type)) return false;
 
       if (tagFilters.size > 0 && !skill.tags.some((t) => tagFilters.has(t))) return false;
+
+      if (filterMode === "updates") return skill.update_status === "update_available";
 
       if (!activeScenario) return true;
 
@@ -219,6 +357,8 @@ export function MySkills() {
 
     return result;
   }, [skills, search, sourceFilters, tagFilters, filterMode, activeScenario, scenarioSkillOrder]);
+
+  const sortedAllTags = useMemo(() => sortTagsByCategory(allTags), [allTags]);
 
   const {
     isMultiSelect, setIsMultiSelect,
@@ -323,6 +463,15 @@ export function MySkills() {
     }
   }, []);
 
+  const refreshMySkillsWorkspaceStatus = useCallback(async () => {
+    try {
+      const status = await api.getMySkillsWorkspaceStatus();
+      setMySkillsWorkspaceStatus(status);
+    } catch {
+      // not critical
+    }
+  }, []);
+
   const refreshGitVersions = useCallback(async () => {
     if (!gitStatus?.is_repo) {
       setGitVersions([]);
@@ -359,12 +508,34 @@ export function MySkills() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [status, savedPath, savedImportUrl] = await Promise.all([
+        api.getMySkillsWorkspaceStatus().catch(() => null),
+        api.getSettings(MY_SKILLS_WORKSPACE_SETTING_KEY).catch(() => null),
+        api.getSettings(MY_SKILLS_IMPORT_URL_SETTING_KEY).catch(() => null),
+      ]);
+      if (cancelled) return;
+      if (status) {
+        setMySkillsWorkspaceStatus(status);
+      }
+      setMySkillsWorkspacePath((savedPath?.trim() || status?.path || "").trim());
+      setMySkillsImportUrl((savedImportUrl?.trim() || "").trim());
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const handleWindowFocus = () => {
       refreshGitStatus();
+      refreshMySkillsWorkspaceStatus();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         refreshGitStatus();
+        refreshMySkillsWorkspaceStatus();
       }
     };
 
@@ -374,14 +545,15 @@ export function MySkills() {
       window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [refreshGitStatus]);
+  }, [refreshGitStatus, refreshMySkillsWorkspaceStatus]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       refreshGitStatus();
+      refreshMySkillsWorkspaceStatus();
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [skills, refreshGitStatus]);
+  }, [skills, refreshGitStatus, refreshMySkillsWorkspaceStatus]);
 
   useEffect(() => {
     if (gitVersionsOpen && gitStatus?.is_repo) {
@@ -543,23 +715,52 @@ export function MySkills() {
   const handleRefreshSkill = async (skill: ManagedSkill) => {
     setUpdatingSkillId(skill.id);
     try {
-      if (skill.source_type === "local" || skill.source_type === "import") {
-        await api.reimportLocalSkill(skill.id);
-        toast.success(t("mySkills.updateActions.reimported"));
-      } else {
-        const result = await api.updateSkill(skill.id);
-        if (result.content_changed) {
-          toast.success(t("mySkills.updateActions.updated"));
-        } else {
-          toast.info(t("mySkills.updateActions.alreadyUpToDate"));
-        }
-      }
+      await updateSkillInternal(skill, true);
       await refreshManagedSkills();
     } catch (error: unknown) {
       toast.error(getErrorMessage(error, t("common.error")));
       await refreshManagedSkills();
     } finally {
       setUpdatingSkillId(null);
+    }
+  };
+
+  const handleUpdateAllAvailable = async () => {
+    if (updatableFilteredSkills.length === 0) return;
+
+    let updated = 0;
+    let unchanged = 0;
+    let failed = 0;
+
+    setUpdatingAll(true);
+    try {
+      for (const skill of updatableFilteredSkills) {
+        setUpdatingSkillId(skill.id);
+        try {
+          const outcome = await updateSkillInternal(skill, false);
+          if (outcome === "updated") {
+            updated += 1;
+          } else {
+            unchanged += 1;
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+
+      if (updated > 0) {
+        toast.success(t("mySkills.updateActions.updatedBatch", { count: updated }));
+      }
+      if (unchanged > 0) {
+        toast.info(t("mySkills.updateActions.unchangedBatch", { count: unchanged }));
+      }
+      if (failed > 0) {
+        toast.error(t("mySkills.updateActions.failedBatch", { count: failed }));
+      }
+    } finally {
+      setUpdatingSkillId(null);
+      setUpdatingAll(false);
+      await refreshManagedSkills();
     }
   };
 
@@ -623,11 +824,113 @@ export function MySkills() {
 
   const getTagOptions = (skill: ManagedSkill, keyword: string) => {
     const needle = keyword.trim().toLowerCase();
-    return allTags.filter((tag) => {
+    return sortTagsByCategory(allTags.filter((tag) => {
       if (skill.tags.includes(tag)) return false;
       if (!needle) return true;
       return tag.toLowerCase().includes(needle);
-    });
+    }));
+  };
+
+  const mySkillsActionLabel = (action: MySkillsWorkspaceAction) =>
+    t(`mySkills.myRepo.actions.${action}`);
+
+  const handleBrowseMySkillsWorkspace = async () => {
+    const selected = await dialogOpen({ directory: true, multiple: false });
+    if (!selected || Array.isArray(selected)) return;
+    setMySkillsWorkspacePath(selected);
+  };
+
+  const handleSaveMySkillsWorkspacePath = async () => {
+    setMySkillsWorkspaceSaving(true);
+    try {
+      const trimmed = mySkillsWorkspacePath.trim();
+      await api.setSettings(MY_SKILLS_WORKSPACE_SETTING_KEY, trimmed);
+      const status = await api.getMySkillsWorkspaceStatus();
+      setMySkillsWorkspaceStatus(status);
+      setMySkillsWorkspacePath(trimmed || status.path || "");
+      toast.success(t("mySkills.myRepo.pathSaved"));
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+    } finally {
+      setMySkillsWorkspaceSaving(false);
+    }
+  };
+
+  const handleRunMySkillsWorkspaceAction = async (action: MySkillsWorkspaceAction) => {
+    setMySkillsWorkspaceAction(action);
+    try {
+      const result = await api.runMySkillsWorkspaceAction(action);
+      await Promise.all([
+        refreshManagedSkills(),
+        refreshScenarios(),
+        refreshMySkillsWorkspaceStatus(),
+      ]);
+
+      const actionLabel = mySkillsActionLabel(action);
+      if (result.status === "partial") {
+        toast.warning(
+          result.detail || t("mySkills.myRepo.actionPartial", { action: actionLabel })
+        );
+      } else if (result.status === "no_changes") {
+        toast.info(
+          result.detail || t("mySkills.myRepo.actionNoChanges", { action: actionLabel })
+        );
+      } else {
+        toast.success(
+          t("mySkills.myRepo.actionSuccess", {
+            action: actionLabel,
+            count: result.refreshed_skills,
+          })
+        );
+      }
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+      await refreshMySkillsWorkspaceStatus();
+    } finally {
+      setMySkillsWorkspaceAction(null);
+      setMySkillsWorkspaceConfirm(null);
+    }
+  };
+
+  const handleRunMySkillsLinkImport = async () => {
+    const trimmed = mySkillsImportUrl.trim();
+    if (!trimmed) return;
+
+    setMySkillsImporting(true);
+    try {
+      await api.setSettings(MY_SKILLS_IMPORT_URL_SETTING_KEY, trimmed).catch(() => {});
+      const result = await api.runMySkillsLinkImport(trimmed);
+      await Promise.all([
+        refreshManagedSkills(),
+        refreshScenarios(),
+        refreshMySkillsWorkspaceStatus(),
+      ]);
+
+      if (result.imported_skills > 0) {
+        toast.success(
+          t("mySkills.myRepo.linkImportSuccess", { count: result.imported_skills })
+        );
+      } else if (result.status === "no_changes") {
+        toast.info(t("mySkills.myRepo.linkImportNoChanges"));
+      } else {
+        toast.success(t("mySkills.myRepo.linkImportFinished"));
+      }
+
+      if (result.errors.length > 0) {
+        toast.warning(
+          t("mySkills.myRepo.linkImportErrors", { count: result.errors.length })
+        );
+      }
+    } catch (error: unknown) {
+      if (isMissingTauriCommand(error, "run_my_skills_link_import")) {
+        toast.error(t("mySkills.myRepo.linkImportNeedRestart"));
+      } else {
+        toast.error(getErrorMessage(error, t("common.error")));
+      }
+      await refreshMySkillsWorkspaceStatus();
+    } finally {
+      setMySkillsImporting(false);
+    }
   };
 
   const handleGitStartBackup = async () => {
@@ -799,6 +1102,31 @@ export function MySkills() {
       ? t("mySkills.updateActions.reimport")
       : t("mySkills.updateActions.update");
 
+  const updatableFilteredSkills = useMemo(
+    () => filtered.filter((skill) => skill.update_status === "update_available"),
+    [filtered]
+  );
+
+  const updateSkillInternal = async (skill: ManagedSkill, showToast: boolean) => {
+    if (skill.source_type === "local" || skill.source_type === "import") {
+      await api.reimportLocalSkill(skill.id);
+      if (showToast) {
+        toast.success(t("mySkills.updateActions.reimported"));
+      }
+      return "updated" as const;
+    }
+
+    const result = await api.updateSkill(skill.id);
+    if (showToast) {
+      if (result.content_changed) {
+        toast.success(t("mySkills.updateActions.updated"));
+      } else {
+        toast.info(t("mySkills.updateActions.alreadyUpToDate"));
+      }
+    }
+    return result.content_changed ? ("updated" as const) : ("unchanged" as const);
+  };
+
   const statusBadge = (skill: ManagedSkill) => {
     if (skill.update_status === "update_available") {
       return {
@@ -821,15 +1149,50 @@ export function MySkills() {
     return null;
   };
 
+  const mySkillsWorkspaceAvailable = !!mySkillsWorkspaceStatus?.available;
+  const mySkillsWorkspaceBusy = !!mySkillsWorkspaceAction || mySkillsWorkspaceSaving || mySkillsImporting;
+
   return (
     <div className="app-page">
       <div className="app-page-header pr-2 pb-1">
-        <h1 className="app-page-title flex items-center gap-2">
-          {t("mySkills.title")}
-          <span className="app-badge">
-            {skills.length}
-          </span>
-        </h1>
+        <div className="flex flex-col gap-1">
+          <h1 className="app-page-title flex items-center gap-2">
+            {t("mySkills.title")}
+            <span className="app-badge">
+              {skills.length}
+            </span>
+          </h1>
+          {activeScenario ? (
+            <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted">
+              <span className="rounded-full bg-surface-hover px-2 py-0.5 font-medium text-secondary">
+                {t("mySkills.currentScenarioLabel", { scenario: activeScenarioName })}
+              </span>
+              <span>{t("mySkills.scenarioAgentSummary", {
+                configured: scenarioAgentSummary?.configured_count ?? 0,
+                available: scenarioAgentSummary?.available_count ?? tools.filter((tool) => tool.installed && tool.enabled).length,
+              })}</span>
+              {(scenarioAgentSummary?.agents ?? []).slice(0, 3).map((agent) => (
+                <span
+                  key={agent.key}
+                  className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-secondary"
+                  title={t("mySkills.scenarioAgentSkillCount", {
+                    agent: agent.display_name,
+                    count: agent.skill_count,
+                  })}
+                >
+                  {agent.display_name}
+                </span>
+              ))}
+              {(scenarioAgentSummary?.agents?.length ?? 0) > 3 ? (
+                <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">
+                  {t("mySkills.scenarioAgentMore", {
+                    count: (scenarioAgentSummary?.agents.length ?? 0) - 3,
+                  })}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="app-toolbar">
@@ -849,10 +1212,10 @@ export function MySkills() {
           </div>
 
           <div className="app-segmented">
-            {(["all", "enabled", "available"] as const).map((mode) => (
+            {(["all", "enabled", "available", "updates"] as const).map((mode) => (
               <button
                 key={mode}
-                onClick={() => setFilterMode(mode)}
+                onClick={() => handleFilterModeChange(mode)}
                 className={cn(
                   "app-segmented-button",
                   filterMode === mode && "app-segmented-button-active"
@@ -916,11 +1279,21 @@ export function MySkills() {
           )}
           <button
             onClick={handleCheckAllUpdates}
-            disabled={checkingAll}
+            disabled={checkingAll || updatingAll}
             className="ml-2 mr-2 inline-flex items-center gap-1 rounded-md border-l border-border-subtle pl-4 pr-3 py-2 text-[13px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
           >
             <RefreshCw className={cn("h-3.5 w-3.5", checkingAll && "animate-spin")} />
             {t("mySkills.updateActions.checkAll")}
+          </button>
+          <button
+            onClick={handleUpdateAllAvailable}
+            disabled={checkingAll || updatingAll || updatableFilteredSkills.length === 0}
+            className="mr-2 inline-flex items-center gap-1 rounded-md px-3 py-2 text-[13px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
+          >
+            <RotateCcw className={cn("h-3.5 w-3.5", updatingAll && "animate-spin")} />
+            {updatingAll
+              ? t("mySkills.updateActions.updatingAll")
+              : t("mySkills.updateActions.updateAll")}
           </button>
           <button
             onClick={() => setViewMode("grid")}
@@ -953,6 +1326,199 @@ export function MySkills() {
         </div>
       </div>
 
+      <div className="rounded-xl border border-border-subtle bg-surface px-4 py-3 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setMySkillsWorkspaceCollapsed((current) => !current)}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[13px] font-semibold text-secondary transition-colors hover:bg-surface-hover"
+                title={mySkillsWorkspaceCollapsed
+                  ? t("mySkills.myRepo.expand")
+                  : t("mySkills.myRepo.collapse")}
+              >
+                {mySkillsWorkspaceCollapsed ? (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                )}
+                <Github className="h-3.5 w-3.5" />
+                {t("mySkills.myRepo.title")}
+              </button>
+            </div>
+            {!mySkillsWorkspaceCollapsed ? (
+              <p className="mt-1 text-[12px] text-muted">{t("mySkills.myRepo.description")}</p>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                mySkillsWorkspaceAvailable
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                  : "bg-red-500/10 text-red-600 dark:text-red-300"
+              )}
+            >
+              {mySkillsWorkspaceAvailable
+                ? t("mySkills.myRepo.ready")
+                : t("mySkills.myRepo.notReady")}
+            </span>
+            {mySkillsWorkspaceStatus ? (
+              <>
+                <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">
+                  {mySkillsWorkspaceStatus.configured
+                    ? t("mySkills.myRepo.configured")
+                    : t("mySkills.myRepo.autoDetected")}
+                </span>
+                {mySkillsWorkspaceStatus.branch ? (
+                  <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">
+                    {t("mySkills.myRepo.branch", { branch: mySkillsWorkspaceStatus.branch })}
+                  </span>
+                ) : null}
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                    mySkillsWorkspaceStatus.has_changes
+                      ? "bg-amber-500/12 text-amber-600 dark:text-amber-300"
+                      : "bg-surface-hover text-muted"
+                  )}
+                >
+                  {mySkillsWorkspaceStatus.has_changes
+                    ? t("mySkills.myRepo.dirty")
+                    : t("mySkills.myRepo.clean")}
+                </span>
+                <span className="rounded-full bg-surface-hover px-2 py-0.5 text-[11px] text-muted">
+                  {t("mySkills.myRepo.managedCount", {
+                    count: mySkillsWorkspaceStatus.managed_skill_count,
+                  })}
+                </span>
+              </>
+            ) : null}
+          </div>
+        </div>
+
+        {!mySkillsWorkspaceCollapsed ? (
+          <>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <input
+                value={mySkillsWorkspacePath}
+                onChange={(e) => setMySkillsWorkspacePath(e.target.value)}
+                placeholder={t("mySkills.myRepo.pathPlaceholder")}
+                className="app-input min-w-[260px] flex-1 text-[12px]"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                onClick={handleBrowseMySkillsWorkspace}
+                disabled={mySkillsWorkspaceBusy}
+                className="app-button-secondary"
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+                {t("mySkills.myRepo.browse")}
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveMySkillsWorkspacePath}
+                disabled={mySkillsWorkspaceBusy}
+                className="app-button-secondary"
+              >
+                {mySkillsWorkspaceSaving ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                )}
+                {t("mySkills.myRepo.savePath")}
+              </button>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="truncate text-[11px] text-faint" title={mySkillsWorkspaceStatus?.path || ""}>
+                {mySkillsWorkspaceStatus?.path
+                  ? t("mySkills.myRepo.currentPath", { path: mySkillsWorkspaceStatus.path })
+                  : t("mySkills.myRepo.currentPathMissing")}
+              </p>
+            </div>
+
+            <div className="mt-3 rounded-lg border border-border-subtle bg-background/60 p-3">
+              <div className="flex items-start gap-2">
+                <Globe className="mt-0.5 h-3.5 w-3.5 text-accent-light" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12px] font-medium text-secondary">
+                    {t("mySkills.myRepo.linkImportTitle")}
+                  </p>
+                  <p className="mt-1 text-[11px] text-muted">
+                    {t("mySkills.myRepo.linkImportDescription")}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  value={mySkillsImportUrl}
+                  onChange={(e) => setMySkillsImportUrl(e.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && mySkillsImportUrl.trim() && !mySkillsWorkspaceBusy) {
+                      void handleRunMySkillsLinkImport();
+                    }
+                  }}
+                  placeholder={t("mySkills.myRepo.linkImportPlaceholder")}
+                  className="app-input min-w-[260px] flex-1 text-[12px]"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                />
+                <button
+                  type="button"
+                  onClick={handleRunMySkillsLinkImport}
+                  disabled={!mySkillsWorkspaceAvailable || mySkillsWorkspaceBusy || !mySkillsImportUrl.trim()}
+                  className="app-button-secondary"
+                >
+                  {mySkillsImporting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="h-3.5 w-3.5" />
+                  )}
+                  {mySkillsImporting
+                    ? t("mySkills.myRepo.linkImportRunning")
+                    : t("mySkills.myRepo.linkImportButton")}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+              <div className="flex flex-wrap gap-2">
+                {(["pull", "update", "push"] as MySkillsWorkspaceAction[]).map((action) => (
+                  <button
+                    key={action}
+                    type="button"
+                    onClick={() =>
+                      action === "push"
+                        ? handleRunMySkillsWorkspaceAction(action)
+                        : setMySkillsWorkspaceConfirm(action)
+                    }
+                    disabled={!mySkillsWorkspaceAvailable || mySkillsWorkspaceBusy}
+                    className="app-button-secondary"
+                  >
+                    {mySkillsWorkspaceAction === action ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : action === "pull" ? (
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    ) : action === "update" ? (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    ) : (
+                      <ArrowUpCircle className="h-3.5 w-3.5" />
+                    )}
+                    {mySkillsActionLabel(action)}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : null}
+      </div>
+
       <div className="flex flex-wrap items-center gap-1 px-1 -mt-2 -mb-3">
         {(["local", "import", "git", "skillssh"] as const).map((src) => (
           <button
@@ -968,31 +1534,10 @@ export function MySkills() {
             {t(`mySkills.sourceFilter.${src}`)}
           </button>
         ))}
-        {allTags.length > 0 && (
+        {sortedAllTags.length > 0 && (
           <>
             <span className="mx-0.5 h-3 w-px bg-border-subtle" />
-            {allTags.map((tag, i) => {
-              const colors = [
-                "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-                "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-                "bg-violet-500/15 text-violet-600 dark:text-violet-400",
-                "bg-amber-500/15 text-amber-600 dark:text-amber-400",
-                "bg-rose-500/15 text-rose-600 dark:text-rose-400",
-                "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
-                "bg-orange-500/15 text-orange-600 dark:text-orange-400",
-                "bg-pink-500/15 text-pink-600 dark:text-pink-400",
-              ];
-              const activeColors = [
-                "bg-blue-500 text-white dark:bg-blue-500",
-                "bg-emerald-500 text-white dark:bg-emerald-500",
-                "bg-violet-500 text-white dark:bg-violet-500",
-                "bg-amber-500 text-white dark:bg-amber-500",
-                "bg-rose-500 text-white dark:bg-rose-500",
-                "bg-cyan-500 text-white dark:bg-cyan-500",
-                "bg-orange-500 text-white dark:bg-orange-500",
-                "bg-pink-500 text-white dark:bg-pink-500",
-              ];
-              const colorIndex = i % colors.length;
+            {sortedAllTags.map((tag) => {
               const isActive = tagFilters.has(tag);
               return (
                 <button
@@ -1000,7 +1545,7 @@ export function MySkills() {
                   onClick={() => setTagFilters(toggleFilter(tagFilters, tag))}
                   className={cn(
                     "rounded-full px-2.5 py-0.5 text-[12px] font-medium transition-colors",
-                    isActive ? activeColors[colorIndex] : colors[colorIndex]
+                    tagToneClasses(tag, isActive)
                   )}
                 >
                   {tag}
@@ -1144,7 +1689,7 @@ export function MySkills() {
                     {canRefresh(skill) ? (
                       <button
                         onClick={() => handleRefreshSkill(skill)}
-                        disabled={updatingSkillId === skill.id}
+                        disabled={updatingAll || updatingSkillId === skill.id}
                         className="rounded p-1 text-accent-light transition-colors hover:bg-accent-bg disabled:opacity-50"
                         title={refreshLabel(skill)}
                       >
@@ -1197,14 +1742,14 @@ export function MySkills() {
                           <>
                             <button
                               onClick={() => handleRelinkSource(skill)}
-                              disabled={updatingSkillId === skill.id}
+                              disabled={updatingAll || updatingSkillId === skill.id}
                               className="rounded-full border border-border-subtle px-2 py-0.5 text-[12px] font-medium text-secondary transition-colors hover:bg-surface-hover disabled:opacity-50"
                             >
                               {t("mySkills.updateActions.relink")}
                             </button>
                             <button
                               onClick={() => handleDetachSource(skill)}
-                              disabled={updatingSkillId === skill.id}
+                              disabled={updatingAll || updatingSkillId === skill.id}
                               className="rounded-full border border-border-subtle px-2 py-0.5 text-[12px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
                             >
                               {t("mySkills.updateActions.detachSource")}
@@ -1214,15 +1759,18 @@ export function MySkills() {
                       </div>
                     )}
                     <div className="mt-2 flex flex-wrap items-center gap-1">
-                      {skill.tags.map((tag) => (
+                      {sortTagsByCategory(skill.tags).map((tag) => (
                         <span
                           key={tag}
-                          className="group/tag inline-flex items-center gap-0.5 rounded-full bg-accent-bg px-2 py-0.5 text-[11px] font-medium text-accent-light"
+                          className={cn(
+                            "group/tag inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                            tagToneClasses(tag)
+                          )}
                         >
                           {tag}
                           <button
                             onClick={(e) => { e.stopPropagation(); handleRemoveTag(skill, tag); }}
-                            className="hidden group-hover/tag:inline-flex rounded-full p-0 text-accent-light/60 hover:text-accent-light"
+                            className="hidden group-hover/tag:inline-flex rounded-full p-0 text-current/60 hover:text-current"
                           >
                             <X className="h-2.5 w-2.5" />
                           </button>
@@ -1348,10 +1896,13 @@ export function MySkills() {
                 </p>
 
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {skill.tags.map((tag) => (
+                  {sortTagsByCategory(skill.tags).map((tag) => (
                     <span
                       key={tag}
-                      className="inline-flex items-center rounded-full bg-accent-bg px-1.5 py-0.5 text-[11px] font-medium text-accent-light"
+                      className={cn(
+                        "inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-medium",
+                        tagToneClasses(tag)
+                      )}
                     >
                       {tag}
                     </span>
@@ -1385,14 +1936,14 @@ export function MySkills() {
                     <>
                       <button
                         onClick={() => handleRelinkSource(skill)}
-                        disabled={updatingSkillId === skill.id}
+                        disabled={updatingAll || updatingSkillId === skill.id}
                         className="rounded px-2 py-0.5 text-[13px] font-medium text-secondary transition-colors hover:bg-surface-hover disabled:opacity-50"
                       >
                         {t("mySkills.updateActions.relink")}
                       </button>
                       <button
                         onClick={() => handleDetachSource(skill)}
-                        disabled={updatingSkillId === skill.id}
+                        disabled={updatingAll || updatingSkillId === skill.id}
                         className="rounded px-2 py-0.5 text-[13px] font-medium text-muted transition-colors hover:bg-surface-hover hover:text-secondary disabled:opacity-50"
                       >
                         {t("mySkills.updateActions.detachSource")}
@@ -1422,7 +1973,7 @@ export function MySkills() {
                   {canRefresh(skill) ? (
                     <button
                       onClick={() => handleRefreshSkill(skill)}
-                      disabled={updatingSkillId === skill.id}
+                      disabled={updatingAll || updatingSkillId === skill.id}
                       className="rounded p-0.5 text-accent-light transition-colors hover:bg-accent-bg disabled:opacity-50"
                       title={refreshLabel(skill)}
                     >
@@ -1467,6 +2018,31 @@ export function MySkills() {
         message={t("mySkills.batchDeleteConfirm", { count: selectedIds.size })}
         onClose={() => setBatchDeleteConfirm(false)}
         onConfirm={handleBatchDelete}
+      />
+      <ConfirmDialog
+        open={mySkillsWorkspaceConfirm !== null}
+        title={
+          mySkillsWorkspaceConfirm === "pull"
+            ? t("mySkills.myRepo.confirm.pullTitle")
+            : t("mySkills.myRepo.confirm.updateTitle")
+        }
+        message={
+          mySkillsWorkspaceConfirm === "pull"
+            ? t("mySkills.myRepo.confirm.pullMessage")
+            : t("mySkills.myRepo.confirm.updateMessage")
+        }
+        tone="warning"
+        confirmLabel={
+          mySkillsWorkspaceConfirm
+            ? mySkillsActionLabel(mySkillsWorkspaceConfirm)
+            : t("common.confirm")
+        }
+        onClose={() => setMySkillsWorkspaceConfirm(null)}
+        onConfirm={() =>
+          mySkillsWorkspaceConfirm
+            ? handleRunMySkillsWorkspaceAction(mySkillsWorkspaceConfirm)
+            : Promise.resolve()
+        }
       />
       <ConfirmDialog
         open={restoreVersionTag !== null}

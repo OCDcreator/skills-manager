@@ -5,6 +5,7 @@ import type { ManagedSkill, Project, Scenario, ToolInfo } from "../lib/tauri";
 import * as api from "../lib/tauri";
 import i18n from "../i18n";
 import { toast } from "sonner";
+import { applyTextSize } from "../lib/textSize";
 
 interface AppState {
   scenarios: Scenario[];
@@ -120,8 +121,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Apply saved text size on startup
       const savedSize = await api.getSettings("text_size").catch(() => null);
       if (savedSize) {
-        const zoomMap: Record<string, string> = { small: "0.9", default: "1", large: "1.1", xlarge: "1.2" };
-        document.documentElement.style.zoom = zoomMap[savedSize] || "1";
+        await applyTextSize(savedSize);
       }
     }
     init();
@@ -194,8 +194,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
                     // Navigate to My Skills without opening a specific detail panel.
                     // AppProvider is outside Router, so use pushState + popstate
                     // to preserve SPA state.
-                    if (!window.location.pathname.endsWith("/my-skills")) {
-                      window.history.pushState(null, "", "/my-skills");
+                    const target = "/my-skills?filter=updates";
+                    if (`${window.location.pathname}${window.location.search}` !== target) {
+                      window.history.pushState(null, "", target);
                       window.dispatchEvent(new PopStateEvent("popstate"));
                     }
                   },

@@ -12,18 +12,30 @@ export function Layout() {
   const onDrag = useDragWindow();
   const navigate = useNavigate();
 
-  // Cmd+, to open Settings
+  // Ctrl/Cmd+, to open Settings
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
-        const target = e.target as HTMLElement;
-        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
-        e.preventDefault();
-        navigate("/settings");
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
       }
+
+      const isSettingsShortcut =
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        (e.code === "Comma" || e.code === "NumpadComma" || e.key === "," || e.key === "，");
+
+      if (!isSettingsShortcut) return;
+
+      e.preventDefault();
+      navigate("/settings");
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [navigate]);
 
   return (

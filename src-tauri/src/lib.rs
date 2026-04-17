@@ -452,6 +452,10 @@ pub fn run() {
             commands::git_backup::git_backup_create_snapshot,
             commands::git_backup::git_backup_list_versions,
             commands::git_backup::git_backup_restore_version,
+            // My Skills Workspace
+            commands::my_skills::get_my_skills_workspace_status,
+            commands::my_skills::run_my_skills_workspace_action,
+            commands::my_skills::run_my_skills_link_import,
             // Projects
             commands::projects::get_projects,
             commands::projects::add_project,
@@ -471,6 +475,7 @@ pub fn run() {
             // Scenarios
             commands::scenarios::get_scenarios,
             commands::scenarios::get_active_scenario,
+            commands::scenarios::get_scenario_agent_summary,
             commands::scenarios::create_scenario,
             commands::scenarios::update_scenario,
             commands::scenarios::delete_scenario,
