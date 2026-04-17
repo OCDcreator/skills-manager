@@ -1,0 +1,7 @@
+{
+  "profile_name": "windows",
+  "platform_note": "Windows / PowerShell environment",
+  "runner_additional_dirs": [],
+  "deploy_verify_path": "",
+  "shell_preference": "pwsh"
+}

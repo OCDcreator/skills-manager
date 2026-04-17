@@ -1,0 +1,63 @@
+{
+  "objective": "Improve maintainability of our downstream enhancement layer relative to upstream xingkongliang/skills-manager, thin future enhancement files without creating fragmented architecture, and avoid restructuring upstream-owned code; prefer isolating and maintaining only our added enhancement code.",
+  "starting_phase_doc": "docs/status/autopilot-phase-0.md",
+  "next_phase_number": 1,
+  "focus_hint": "R1 - First maintainability / refactor slice",
+  "max_rounds": 200,
+  "max_consecutive_failures": 3,
+  "lint_command": "npm run lint",
+  "typecheck_command": "npx tsc -b --pretty false",
+  "full_test_command": "cargo test --manifest-path src-tauri/Cargo.toml",
+  "targeted_test_required": false,
+  "targeted_test_prefixes": [],
+  "targeted_test_required_paths": [
+    "src/",
+    "src-tauri/",
+    "docs/status/",
+    "package.json",
+    "package-lock.json",
+    "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock"
+  ],
+  "full_test_cadence_rounds": 1,
+  "full_test_required_paths": [
+    "src/",
+    "src-tauri/",
+    "docs/status/",
+    "package.json",
+    "package-lock.json",
+    "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock"
+  ],
+  "build_command": "npm run build",
+  "build_required_paths": [
+    "src/",
+    "src-tauri/",
+    "docs/status/",
+    "package.json",
+    "package-lock.json",
+    "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock"
+  ],
+  "vulture_command": "",
+  "deploy_after_build": false,
+  "deploy_policy": "targeted",
+  "deploy_required_paths": [],
+  "deploy_verify_path": "",
+  "max_git_status_per_round": 6,
+  "max_git_diff_stat_per_round": 3,
+  "allowed_branch_prefixes": [
+  "autopilot/",
+  "automation/",
+  "quality/",
+  "bugfix/"
+],
+  "commit_prefix": "autopilot",
+  "phase_doc_prefix": "docs/status/autopilot-phase-",
+  "prompt_template": "automation/round-prompt.md",
+  "result_schema": "automation/round-result.schema.json",
+  "runner_kind": "codex",
+  "runner_command": "",
+  "runner_model": "",
+  "runner_extra_args": []
+}

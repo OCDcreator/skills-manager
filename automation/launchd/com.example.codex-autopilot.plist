@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.codex-autopilot</string>
+	<key>WorkingDirectory</key>
+	<string>/ABSOLUTE/PATH/TO/REPO</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/ABSOLUTE/PATH/TO/REPO/automation/start-autopilot.sh</string>
+		<string>--background</string>
+		<string>--pid-path</string>
+		<string>automation/runtime/launchd.pid</string>
+		<string>--output-path</string>
+		<string>automation/runtime/launchd.out</string>
+		<string>--</string>
+		<string>--profile</string>
+		<string>mac</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>/ABSOLUTE/PATH/TO/REPO/automation/runtime/launchd.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/ABSOLUTE/PATH/TO/REPO/automation/runtime/launchd.stderr.log</string>
+</dict>
+</plist>

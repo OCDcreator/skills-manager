@@ -1,0 +1,7 @@
+{
+  "profile_name": "mac",
+  "platform_note": "macOS environment",
+  "runner_additional_dirs": [],
+  "deploy_verify_path": "",
+  "shell_preference": "zsh"
+}

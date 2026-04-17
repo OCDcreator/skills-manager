@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Repository Autopilot Round Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "phase_doc_path",
+    "tests_run",
+    "commands_run",
+    "build_ran",
+    "deploy_ran",
+    "deploy_verified",
+    "build_id",
+    "commit_sha",
+    "commit_message",
+    "next_focus",
+    "blocking_reason",
+    "changed_files"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failure",
+        "goal_complete"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase_doc_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tests_run": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "commands_run": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "build_ran": {
+      "type": "boolean"
+    },
+    "deploy_ran": {
+      "type": "boolean"
+    },
+    "deploy_verified": {
+      "type": "boolean"
+    },
+    "build_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "commit_sha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "commit_message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "next_focus": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "blocking_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}
