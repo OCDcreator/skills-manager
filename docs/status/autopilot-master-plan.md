@@ -12,9 +12,10 @@
 
 ## Priority lanes
 
-- **P1. Thick-owner reduction**: shrink modules or entrypoints that still concentrate too much ownership
-- **P2. Validation friction**: clean up validation-heavy hotspots only when they unblock or stabilize P1 work
-- **P3. Boundary hygiene**: keep docs, queue, and validation instructions aligned with the current architecture
+- **P1. Repo-source expansion sync**: make sure installed repo-backed skills surface newly added sibling skill directories when the upstream source repo grows
+- **P2. Thick-owner reduction**: shrink modules or entrypoints that still concentrate too much ownership in our downstream enhancement layer
+- **P3. Validation friction**: clean up validation-heavy hotspots only when they unblock or stabilize P1 work
+- **P4. Boundary hygiene**: keep docs, queue, and validation instructions aligned with the current architecture
 
 ## Guardrails
 

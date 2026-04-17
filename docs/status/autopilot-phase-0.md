@@ -11,17 +11,20 @@
 ## Seeded entrypoints
 
 - `AGENTS.md`
-- `README.md`
-- `docs/`
-- `src/`
+- `automation/round-prompt.md`
+- `docs/status/`
 - `src/views/MySkills.tsx`
+- `src/components/MySkillsTerminalPanel.tsx`
+- `src/lib/tauri.ts`
 - `src-tauri/src/commands/skills.rs`
+- `src-tauri/src/core/git_fetcher.rs`
+- `src-tauri/src/core/installer.rs`
+- `src-tauri/src/core/skill_store.rs`
 - `src-tauri/src/core/my_skills_repo.rs`
-- `src/views/InstallSkills.tsx`
 
 ## Inferred validation commands
 
-- Lint: `npm run lint` (source: `CLI override`)
+- Lint: `npx eslint src/views/MySkills.tsx src/lib/tauri.ts src/components/MySkillsTerminalPanel.tsx` (source: `manual downstream override`)
 - Typecheck: `npx tsc -b --pretty false` (source: `CLI override`)
 - Full test: `cargo test --manifest-path src-tauri/Cargo.toml` (source: `CLI override`)
 - Build: `npm run build` (source: `CLI override`)
@@ -30,4 +33,5 @@
 ## Notes
 
 - This phase-0 document is the scaffold baseline.
+- Global `npm run lint` is currently blocked by pre-existing upstream-owned `SkillDetailPanel.tsx` rules; unattended rounds should validate the downstream enhancement UI seam until that upstream baseline is intentionally addressed.
 - The first unattended round should write `docs/status/autopilot-phase-1.md`.
