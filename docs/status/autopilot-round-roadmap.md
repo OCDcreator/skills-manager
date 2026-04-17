@@ -40,7 +40,7 @@
 - **Acceptance**:
   - Another queued slice lands with validations green
 
-### [NEXT] R3 - Checkpoint after first refactor batch
+### [DONE] R3 - Checkpoint after first refactor batch
 
 - **Lane**: Checkpoint
 - **Goal**: Review R1-R2, document what ownership actually moved, and decide whether the preset queue should stop or be manually extended.
@@ -52,5 +52,6 @@
 
 ## Current state
 
-- The current `[NEXT]` is `R3 - Checkpoint after first refactor batch`.
+- No `[NEXT]` item remains in this preset queue after `R3 - Checkpoint after first refactor batch`.
+- The maintainability/refactor preset should stop here unless a maintainer manually extends the queue with a new bounded slice.
 - Successful rounds must keep the queue synchronized with the phase docs.

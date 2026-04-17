@@ -1,10 +1,11 @@
 # Autopilot Lane Map
 
 > **Preset**: `Maintainability / Refactor`
-> **Current `[NEXT]`**: `R3 - Checkpoint after first refactor batch`
+> **Current `[NEXT]`**: none; preset queue complete after `R3 - Checkpoint after first refactor batch`
 
 ## Current priority
 
+- Stop the current preset queue unless a maintainer manually adds another bounded slice
 - Keep the queue bounded and repo-specific
 - Keep the repo-source sibling-skill refresh fix stable in the downstream enhancement flow
 - Reduce one maintainability hotspot at a time
@@ -36,6 +37,7 @@
 ## Boundaries
 
 - Do not refactor outside the queued slice
+- Do not add a new `[NEXT]` item automatically after the R3 checkpoint
 - Do not turn maintainability work into a broad rewrite
 - Keep upstream-owned structure recognizable; optimize downstream enhancement seams instead
 - Thin large downstream files with cohesive extraction, not wrapper fragmentation
