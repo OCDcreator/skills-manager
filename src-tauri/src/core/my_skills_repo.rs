@@ -80,10 +80,11 @@ pub struct LinkImportProcessOutput {
 
 #[derive(Debug, Clone)]
 pub struct MySkillsTerminalLaunch {
-    pub shell_program: String,
-    pub shell_args: Vec<String>,
+    pub program: String,
+    pub args: Vec<String>,
     pub command: String,
     pub command_preview: String,
+    pub startup_banner: String,
     pub path: String,
     pub source_url: String,
     pub path_env: Option<OsString>,
@@ -310,19 +311,19 @@ pub fn finalize_link_import(
 pub fn build_link_import_terminal_launch(
     prepared: &LinkImportPreparation,
 ) -> Result<MySkillsTerminalLaunch> {
-    let shell_program = terminal_shell_program();
-    let shell_args = terminal_shell_args();
-    let command = build_terminal_startup_script(prepared)?;
-    let command_preview = build_terminal_command_preview(prepared);
+    let invocation = build_opencode_invocation(&prepared.workspace, &prepared.source_url);
+    let command = build_terminal_startup_script(&invocation);
+    let command_preview = invocation.command_preview();
 
     Ok(MySkillsTerminalLaunch {
-        shell_program,
-        shell_args,
+        program: invocation.program,
+        args: invocation.args,
         command,
-        command_preview,
+        command_preview: command_preview.clone(),
+        startup_banner: build_terminal_startup_banner(prepared, &command_preview),
         path: prepared.workspace.to_string_lossy().to_string(),
         source_url: prepared.source_url.clone(),
-        path_env: build_opencode_path_override(),
+        path_env: invocation.path_override,
     })
 }
 
@@ -636,19 +637,26 @@ fn execute_workspace_link_import(
 struct OpencodeInvocation {
     program: String,
     args: Vec<String>,
-    shell_program: String,
-    shell_command: String,
     path_override: Option<OsString>,
 }
 
 impl OpencodeInvocation {
     fn command_preview(&self) -> String {
         let mut parts = Vec::with_capacity(self.args.len() + 1);
-        parts.push(shell_quote_for_display(&self.shell_program));
+        parts.push(shell_quote_for_display(&self.program));
         for arg in self.args.iter().take(self.args.len().saturating_sub(1)) {
             parts.push(shell_quote_for_display(arg));
         }
         parts.push("<prompt>".to_string());
+        parts.join(" ")
+    }
+
+    fn command_for_copy(&self) -> String {
+        let mut parts = Vec::with_capacity(self.args.len() + 1);
+        parts.push(shell_quote_for_display(&self.program));
+        for arg in &self.args {
+            parts.push(shell_quote_for_display(arg));
+        }
         parts.join(" ")
     }
 }
@@ -669,14 +677,11 @@ fn build_opencode_invocation(workspace: &Path, source_url: &str) -> OpencodeInvo
     let program = resolved_opencode_program()
         .unwrap_or_else(|| "opencode".to_string());
     let path_override = build_opencode_path_override();
-    let shell_command = build_opencode_shell_command(workspace, &program, &args);
     args.shrink_to_fit();
 
     OpencodeInvocation {
-        program: program.clone(),
+        program,
         args,
-        shell_program: program,
-        shell_command,
         path_override,
     }
 }
@@ -835,44 +840,6 @@ fn find_windows_opencode_program_in_dirs(paths: &[PathBuf]) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn build_opencode_shell_command(workspace: &Path, program: &str, args: &[String]) -> String {
-    #[cfg(target_os = "windows")]
-    {
-        let mut pieces = Vec::with_capacity(args.len() + 2);
-        pieces.push("&".to_string());
-        pieces.push(ps_single_quote(program));
-        for arg in args.iter().take(args.len().saturating_sub(1)) {
-            pieces.push(ps_single_quote(arg));
-        }
-        pieces.push("$prompt".to_string());
-        format!(
-            "cd {}\r\n$env:NO_COLOR = '1'\r\n$prompt = @(\r\n{}\r\n) -join [Environment]::NewLine\r\n{}\r\nexit $LASTEXITCODE\r\n",
-            ps_single_quote(workspace.to_string_lossy().as_ref()),
-            ps_prompt_lines(&args[args.len().saturating_sub(1)]),
-            pieces.join(" ")
-        )
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let delimiter = unique_heredoc_delimiter(&args[args.len().saturating_sub(1)]);
-        let mut pieces = Vec::with_capacity(args.len() + 1);
-        pieces.push(sh_single_quote(program));
-        for arg in args.iter().take(args.len().saturating_sub(1)) {
-            pieces.push(sh_single_quote(arg));
-        }
-        pieces.push("\"$PROMPT\"".to_string());
-        format!(
-            "cd {}\nexport NO_COLOR=1\nPROMPT=$(cat <<'{}'\n{}\n{}\n)\n{}\nexit $?\n",
-            sh_single_quote(workspace.to_string_lossy().as_ref()),
-            delimiter,
-            args[args.len().saturating_sub(1)],
-            delimiter,
-            pieces.join(" ")
-        )
-    }
 }
 
 fn script_path_for_action(workspace: &Path, action: MySkillsWorkspaceAction) -> Option<PathBuf> {
@@ -1343,44 +1310,28 @@ fn workspace_skill_path_set(workspace: &Path) -> BTreeSet<String> {
         .collect()
 }
 
-fn terminal_shell_program() -> String {
+fn build_terminal_startup_script(invocation: &OpencodeInvocation) -> String {
+    invocation.command_for_copy()
+}
+
+fn build_terminal_startup_banner(prepared: &LinkImportPreparation, command_preview: &str) -> String {
     #[cfg(target_os = "windows")]
     {
-        "powershell".to_string()
+        format!(
+            "PS {}> {}\r\n\r\n",
+            prepared.workspace.to_string_lossy(),
+            command_preview
+        )
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("SHELL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "/bin/sh".to_string())
+        format!(
+            "{}$ {}\n\n",
+            prepared.workspace.to_string_lossy(),
+            command_preview
+        )
     }
-}
-
-fn terminal_shell_args() -> Vec<String> {
-    #[cfg(target_os = "windows")]
-    {
-        vec![
-            "-NoLogo".to_string(),
-            "-NoProfile".to_string(),
-            "-ExecutionPolicy".to_string(),
-            "Bypass".to_string(),
-        ]
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Vec::new()
-    }
-}
-
-fn build_terminal_startup_script(prepared: &LinkImportPreparation) -> Result<String> {
-    Ok(build_opencode_invocation(&prepared.workspace, &prepared.source_url).shell_command)
-}
-
-fn build_terminal_command_preview(prepared: &LinkImportPreparation) -> String {
-    build_opencode_invocation(&prepared.workspace, &prepared.source_url).command_preview()
 }
 
 fn strip_ansi_from_text(text: &str) -> String {
@@ -1412,14 +1363,6 @@ fn sh_single_quote(value: &str) -> String {
 
 fn ps_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
-}
-
-fn ps_prompt_lines(prompt: &str) -> String {
-    prompt
-        .lines()
-        .map(ps_single_quote)
-        .collect::<Vec<_>>()
-        .join("\r\n")
 }
 
 #[cfg(not(target_os = "windows"))]

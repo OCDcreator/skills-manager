@@ -316,8 +316,8 @@ fn spawn_terminal_session(
         pixel_height: 0,
     })?;
 
-    let mut builder = CommandBuilder::new(&launch.shell_program);
-    for arg in &launch.shell_args {
+    let mut builder = CommandBuilder::new(&launch.program);
+    for arg in &launch.args {
         builder.arg(arg);
     }
     builder.cwd(&launch.path);
@@ -337,9 +337,10 @@ fn spawn_terminal_session(
     let writer = pair.master.take_writer()?;
     let killer = child.clone_killer();
     let session = TerminalSession::new(uuid::Uuid::new_v4().to_string(), &launch, writer, pair.master, killer);
+    if !launch.startup_banner.is_empty() {
+        session.append_output(&launch.startup_banner);
+    }
     emit_state(&app_handle, &session.snapshot());
-
-    session.write_input(launch.command.as_bytes())?;
 
     let reader_session = session.clone();
     let reader_app = app_handle.clone();
