@@ -34,6 +34,7 @@ import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
 import { useMultiSelect } from "../hooks/useMultiSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { MySkillsTerminalPanel } from "../components/MySkillsTerminalPanel";
 import { SkillDetailPanel } from "../components/SkillDetailPanel";
 import { MultiSelectToolbar } from "../components/MultiSelectToolbar";
 import * as api from "../lib/tauri";
@@ -46,6 +47,10 @@ import type {
   SkillToolToggle,
   MySkillsWorkspaceAction,
   MySkillsWorkspaceStatus,
+  MySkillsTerminalState,
+  MySkillsTerminalOutputEvent,
+  MySkillsTerminalStateEvent,
+  MySkillsTerminalExitEvent,
 } from "../lib/tauri";
 import { getErrorMessage, getErrorKind } from "../lib/error";
 import {
@@ -70,10 +75,6 @@ const MY_SKILLS_WORKSPACE_SETTING_KEY = "my_skills_workspace_path";
 const MY_SKILLS_IMPORT_URL_SETTING_KEY = "my_skills_import_source_url";
 const TAG_CATEGORY_ORDER = ["场景:", "来源:", "仓库:", "用途:", "集合:", "风险:"];
 type FilterMode = "all" | "enabled" | "available" | "updates";
-type MySkillsImportLogEvent = {
-  stream: "stdout" | "stderr";
-  line: string;
-};
 
 function normalizeFilterMode(value: string | null): FilterMode {
   if (value === "enabled" || value === "available" || value === "updates") {
@@ -242,12 +243,15 @@ export function MySkills() {
   const [mySkillsWorkspaceAction, setMySkillsWorkspaceAction] = useState<MySkillsWorkspaceAction | null>(null);
   const [mySkillsWorkspaceConfirm, setMySkillsWorkspaceConfirm] = useState<MySkillsWorkspaceAction | null>(null);
   const [mySkillsImportUrl, setMySkillsImportUrl] = useState("");
-  const [mySkillsImporting, setMySkillsImporting] = useState(false);
-  const [mySkillsImportLogLines, setMySkillsImportLogLines] = useState<string[]>([]);
+  const [mySkillsTerminal, setMySkillsTerminal] = useState<MySkillsTerminalState | null>(null);
+  const [mySkillsTerminalExpanded, setMySkillsTerminalExpanded] = useState(false);
+  const [mySkillsTerminalVisible, setMySkillsTerminalVisible] = useState(false);
+  const [mySkillsTerminalNow, setMySkillsTerminalNow] = useState(() => Date.now());
   const [mySkillsWorkspaceCollapsed, setMySkillsWorkspaceCollapsed] = useState(true);
   const [tagEditSkillId, setTagEditSkillId] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState("");
   const tagInputRef = useRef<HTMLInputElement>(null);
+  const lastTerminalExitRef = useRef<string | null>(null);
 
   const [scenarioSkillOrder, setScenarioSkillOrder] = useState<string[]>([]);
 
@@ -516,10 +520,11 @@ export function MySkills() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [status, savedPath, savedImportUrl] = await Promise.all([
+      const [status, savedPath, savedImportUrl, terminalStatus] = await Promise.all([
         api.getMySkillsWorkspaceStatus().catch(() => null),
         api.getSettings(MY_SKILLS_WORKSPACE_SETTING_KEY).catch(() => null),
         api.getSettings(MY_SKILLS_IMPORT_URL_SETTING_KEY).catch(() => null),
+        api.getMySkillsTerminalStatus().catch(() => null),
       ]);
       if (cancelled) return;
       if (status) {
@@ -527,6 +532,11 @@ export function MySkills() {
       }
       setMySkillsWorkspacePath((savedPath?.trim() || status?.path || "").trim());
       setMySkillsImportUrl((savedImportUrl?.trim() || "").trim());
+      if (terminalStatus) {
+        setMySkillsTerminal(terminalStatus);
+        setMySkillsTerminalVisible(true);
+        setMySkillsTerminalExpanded(terminalStatus.running || terminalStatus.transcript.length > 0);
+      }
     })();
     return () => {
       cancelled = true;
@@ -566,6 +576,94 @@ export function MySkills() {
       refreshGitVersions();
     }
   }, [gitVersionsOpen, gitStatus?.is_repo, refreshGitVersions]);
+
+  useEffect(() => {
+    if (!mySkillsTerminal?.running) return;
+    const timer = window.setInterval(() => setMySkillsTerminalNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [mySkillsTerminal?.running]);
+
+  useEffect(() => {
+    let disposed = false;
+    const handleTerminalFinished = async (state: MySkillsTerminalState) => {
+      setMySkillsTerminal(state);
+      setMySkillsTerminalVisible(true);
+      setMySkillsTerminalExpanded(true);
+
+      const key = `${state.session.session_id}:${state.exit_code ?? "none"}:${state.error ?? "ok"}`;
+      if (lastTerminalExitRef.current === key) return;
+      lastTerminalExitRef.current = key;
+
+      await Promise.all([
+        refreshManagedSkills(),
+        refreshScenarios(),
+        refreshMySkillsWorkspaceStatus(),
+      ]);
+
+      if (state.result) {
+        if (state.result.imported_skills > 0) {
+          toast.success(
+            t("mySkills.myRepo.linkImportSuccess", { count: state.result.imported_skills })
+          );
+        } else if (state.result.status === "partial") {
+          toast.warning(state.result.detail || t("mySkills.myRepo.linkImportPartial"));
+        } else if (state.result.status === "no_changes") {
+          toast.info(state.result.detail || t("mySkills.myRepo.linkImportNoChanges"));
+        } else {
+          toast.success(state.result.detail || t("mySkills.myRepo.linkImportFinished"));
+        }
+
+        if (state.result.errors.length > 0) {
+          toast.warning(
+            t("mySkills.myRepo.linkImportErrors", { count: state.result.errors.length })
+          );
+        }
+      } else {
+        toast.error(state.error || t("mySkills.myRepo.terminalMissingResult"));
+      }
+    };
+
+    const bind = async () => {
+      const [unlistenOutput, unlistenState, unlistenExit] = await Promise.all([
+        listen<MySkillsTerminalOutputEvent>("my-skills-terminal-output", (event) => {
+          if (disposed) return;
+          setMySkillsTerminal((prev) => {
+            if (!prev || prev.session.session_id !== event.payload.session_id) {
+              return prev;
+            }
+            return {
+              ...prev,
+              last_activity_at: event.payload.received_at,
+              transcript: `${prev.transcript}${event.payload.chunk}`,
+            };
+          });
+        }),
+        listen<MySkillsTerminalStateEvent>("my-skills-terminal-state", (event) => {
+          if (disposed) return;
+          setMySkillsTerminal(event.payload.state);
+          setMySkillsTerminalVisible(true);
+        }),
+        listen<MySkillsTerminalExitEvent>("my-skills-terminal-exit", (event) => {
+          if (disposed) return;
+          void handleTerminalFinished(event.payload.state);
+        }),
+      ]);
+
+      return () => {
+        unlistenOutput();
+        unlistenState();
+        unlistenExit();
+      };
+    };
+
+    const cleanupPromise = bind();
+    return () => {
+      disposed = true;
+      cleanupPromise
+        .then((cleanup) => cleanup())
+        .catch(() => {});
+    };
+  }, [refreshManagedSkills, refreshMySkillsWorkspaceStatus, refreshScenarios, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -902,61 +1000,51 @@ export function MySkills() {
     const trimmed = mySkillsImportUrl.trim();
     if (!trimmed) return;
 
-    setMySkillsImporting(true);
-    setMySkillsImportLogLines([]);
-    let unlisten: (() => void) | undefined;
     try {
-      unlisten = await listen<MySkillsImportLogEvent>(
-        "my-skills-link-import-output",
-        (event) => {
-          const { stream, line } = event.payload;
-          const prefix = stream === "stderr" ? "stderr" : "stdout";
-          setMySkillsImportLogLines((prev) => [
-            ...prev.slice(-119),
-            `${prefix}> ${line}`,
-          ]);
-        }
-      );
       await api.setSettings(MY_SKILLS_IMPORT_URL_SETTING_KEY, trimmed).catch(() => {});
-      const result = await api.runMySkillsLinkImport(trimmed);
-      await Promise.all([
-        refreshManagedSkills(),
-        refreshScenarios(),
-        refreshMySkillsWorkspaceStatus(),
-      ]);
-
-      if (result.detail) {
-        setMySkillsImportLogLines((prev) => [...prev.slice(-119), `DETAIL: ${result.detail}`]);
+      if (mySkillsTerminal?.running) {
+        setMySkillsTerminalVisible(true);
+        setMySkillsTerminalExpanded(true);
+        return;
       }
 
-      if (result.imported_skills > 0) {
-        toast.success(
-          t("mySkills.myRepo.linkImportSuccess", { count: result.imported_skills })
-        );
-      } else if (result.status === "partial") {
-        toast.warning(result.detail || t("mySkills.myRepo.linkImportPartial"));
-      } else if (result.status === "no_changes") {
-        toast.info(result.detail || t("mySkills.myRepo.linkImportNoChanges"));
-      } else {
-        toast.success(result.detail || t("mySkills.myRepo.linkImportFinished"));
-      }
-
-      if (result.errors.length > 0) {
-        toast.warning(
-          t("mySkills.myRepo.linkImportErrors", { count: result.errors.length })
-        );
-      }
+      const state = await api.startMySkillsLinkImportTerminal(trimmed);
+      setMySkillsTerminal(state);
+      setMySkillsTerminalVisible(true);
+      setMySkillsTerminalExpanded(true);
+      lastTerminalExitRef.current = null;
     } catch (error: unknown) {
-      if (isMissingTauriCommand(error, "run_my_skills_link_import")) {
+      if (isMissingTauriCommand(error, "start_my_skills_link_import_terminal")) {
         toast.error(t("mySkills.myRepo.linkImportNeedRestart"));
       } else {
-        toast.error(getErrorMessage(error, t("common.error")));
+        toast.error(getErrorMessage(error, t("mySkills.myRepo.terminalStartFailed")));
       }
       await refreshMySkillsWorkspaceStatus();
-    } finally {
-      unlisten?.();
-      setMySkillsImporting(false);
     }
+  };
+
+  const handleMySkillsTerminalInput = useCallback((input: string) => {
+    if (!mySkillsTerminal?.session.session_id) return;
+    void api.writeMySkillsTerminalInput(mySkillsTerminal.session.session_id, input).catch(() => {});
+  }, [mySkillsTerminal?.session.session_id]);
+
+  const handleMySkillsTerminalResize = useCallback((cols: number, rows: number) => {
+    if (!mySkillsTerminal?.session.session_id || cols <= 0 || rows <= 0) return;
+    void api.resizeMySkillsTerminal(mySkillsTerminal.session.session_id, cols, rows).catch(() => {});
+  }, [mySkillsTerminal?.session.session_id]);
+
+  const handleInterruptMySkillsTerminal = async () => {
+    if (!mySkillsTerminal?.session.session_id || !mySkillsTerminal.running) return;
+    try {
+      await api.interruptMySkillsTerminal(mySkillsTerminal.session.session_id);
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+    }
+  };
+
+  const handleCloseMySkillsTerminalPanel = () => {
+    setMySkillsTerminalVisible(false);
+    setMySkillsTerminalExpanded(false);
   };
 
   const handleGitStartBackup = async () => {
@@ -1176,7 +1264,15 @@ export function MySkills() {
   };
 
   const mySkillsWorkspaceAvailable = !!mySkillsWorkspaceStatus?.available;
+  const mySkillsImporting = !!mySkillsTerminal?.running;
   const mySkillsWorkspaceBusy = !!mySkillsWorkspaceAction || mySkillsWorkspaceSaving || mySkillsImporting;
+  const mySkillsTerminalIdle = !!mySkillsTerminal?.running
+    && mySkillsTerminalNow - mySkillsTerminal.last_activity_at >= 60_000;
+  const mySkillsTerminalIdleText = mySkillsTerminalIdle && mySkillsTerminal
+    ? t("mySkills.myRepo.terminalIdle", {
+        seconds: Math.max(60, Math.floor((mySkillsTerminalNow - mySkillsTerminal.last_activity_at) / 1000)),
+      })
+    : null;
 
   return (
     <div className="app-page">
@@ -1485,7 +1581,11 @@ export function MySkills() {
                   value={mySkillsImportUrl}
                   onChange={(e) => setMySkillsImportUrl(e.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && mySkillsImportUrl.trim() && !mySkillsWorkspaceBusy) {
+                    if (
+                      event.key === "Enter"
+                      && (mySkillsImportUrl.trim() || mySkillsImporting)
+                      && (!mySkillsWorkspaceSaving && !mySkillsWorkspaceAction)
+                    ) {
                       void handleRunMySkillsLinkImport();
                     }
                   }}
@@ -1498,7 +1598,12 @@ export function MySkills() {
                 <button
                   type="button"
                   onClick={handleRunMySkillsLinkImport}
-                  disabled={!mySkillsWorkspaceAvailable || mySkillsWorkspaceBusy || !mySkillsImportUrl.trim()}
+                  disabled={
+                    !mySkillsWorkspaceAvailable
+                    || mySkillsWorkspaceSaving
+                    || !!mySkillsWorkspaceAction
+                    || (!mySkillsImportUrl.trim() && !mySkillsImporting)
+                  }
                   className="app-button-secondary"
                 >
                   {mySkillsImporting ? (
@@ -1507,28 +1612,23 @@ export function MySkills() {
                     <Plus className="h-3.5 w-3.5" />
                   )}
                   {mySkillsImporting
-                    ? t("mySkills.myRepo.linkImportRunning")
+                    ? t("mySkills.myRepo.linkImportFocus")
                     : t("mySkills.myRepo.linkImportButton")}
                 </button>
               </div>
-              {(mySkillsImporting || mySkillsImportLogLines.length > 0) ? (
-                <div className="mt-3 rounded-md border border-border-subtle bg-surface/70 p-2">
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-medium text-muted">
-                      {t("mySkills.myRepo.linkImportLogTitle")}
-                    </span>
-                    {mySkillsImporting ? (
-                      <span className="text-[11px] text-faint">
-                        {t("mySkills.myRepo.linkImportRunning")}
-                      </span>
-                    ) : null}
-                  </div>
-                  <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded bg-background/80 p-2 text-[11px] leading-relaxed text-muted">
-                    {mySkillsImportLogLines.length > 0
-                      ? mySkillsImportLogLines.join("\n")
-                      : t("mySkills.myRepo.linkImportLogWaiting")}
-                  </pre>
-                </div>
+              {mySkillsTerminalVisible && mySkillsTerminal ? (
+                <MySkillsTerminalPanel
+                  terminal={mySkillsTerminal}
+                  expanded={mySkillsTerminalExpanded}
+                  idle={mySkillsTerminalIdle}
+                  idleText={mySkillsTerminalIdleText}
+                  onExpandedChange={setMySkillsTerminalExpanded}
+                  onInput={handleMySkillsTerminalInput}
+                  onResize={handleMySkillsTerminalResize}
+                  onInterrupt={handleInterruptMySkillsTerminal}
+                  onRerun={() => void handleRunMySkillsLinkImport()}
+                  onClose={handleCloseMySkillsTerminalPanel}
+                />
               ) : null}
             </div>
 

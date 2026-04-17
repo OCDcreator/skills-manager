@@ -474,6 +474,40 @@ export interface MySkillsWorkspaceLinkImportResult {
   has_changes: boolean;
 }
 
+export interface MySkillsTerminalSession {
+  session_id: string;
+  source_url: string;
+  path: string;
+  command: string;
+  command_preview: string;
+  started_at: number;
+}
+
+export interface MySkillsTerminalState {
+  session: MySkillsTerminalSession;
+  running: boolean;
+  exit_code: number | null;
+  exit_signal: string | null;
+  last_activity_at: number;
+  error: string | null;
+  result: MySkillsWorkspaceLinkImportResult | null;
+  transcript: string;
+}
+
+export interface MySkillsTerminalOutputEvent {
+  session_id: string;
+  chunk: string;
+  received_at: number;
+}
+
+export interface MySkillsTerminalStateEvent {
+  state: MySkillsTerminalState;
+}
+
+export interface MySkillsTerminalExitEvent {
+  state: MySkillsTerminalState;
+}
+
 export const getMySkillsWorkspaceStatus = () =>
   invoke<MySkillsWorkspaceStatus>("get_my_skills_workspace_status");
 
@@ -482,6 +516,24 @@ export const runMySkillsWorkspaceAction = (action: MySkillsWorkspaceAction) =>
 
 export const runMySkillsLinkImport = (sourceUrl: string) =>
   invoke<MySkillsWorkspaceLinkImportResult>("run_my_skills_link_import", { sourceUrl });
+
+export const startMySkillsLinkImportTerminal = (sourceUrl: string) =>
+  invoke<MySkillsTerminalState>("start_my_skills_link_import_terminal", { sourceUrl });
+
+export const writeMySkillsTerminalInput = (sessionId: string, input: string) =>
+  invoke<void>("write_my_skills_terminal_input", { sessionId, input });
+
+export const resizeMySkillsTerminal = (sessionId: string, cols: number, rows: number) =>
+  invoke<void>("resize_my_skills_terminal", { sessionId, cols, rows });
+
+export const interruptMySkillsTerminal = (sessionId: string) =>
+  invoke<void>("interrupt_my_skills_terminal", { sessionId });
+
+export const closeMySkillsTerminal = (sessionId: string) =>
+  invoke<void>("close_my_skills_terminal", { sessionId });
+
+export const getMySkillsTerminalStatus = () =>
+  invoke<MySkillsTerminalState | null>("get_my_skills_terminal_status");
 
 // ── Scenarios ──
 

@@ -347,10 +347,12 @@ pub fn run() {
     initialize_startup_scenario(&store).expect("Failed to initialize startup scenario");
 
     let cancel_registry = Arc::new(core::install_cancel::InstallCancelRegistry::new());
+    let my_skills_terminal_manager = Arc::new(core::my_skills_terminal::MySkillsTerminalManager::new());
 
     tauri::Builder::default()
         .manage(store)
         .manage(cancel_registry)
+        .manage(my_skills_terminal_manager)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             restore_main_window(app);
         }))
@@ -456,6 +458,12 @@ pub fn run() {
             commands::my_skills::get_my_skills_workspace_status,
             commands::my_skills::run_my_skills_workspace_action,
             commands::my_skills::run_my_skills_link_import,
+            commands::my_skills::start_my_skills_link_import_terminal,
+            commands::my_skills::write_my_skills_terminal_input,
+            commands::my_skills::resize_my_skills_terminal,
+            commands::my_skills::interrupt_my_skills_terminal,
+            commands::my_skills::close_my_skills_terminal,
+            commands::my_skills::get_my_skills_terminal_status,
             // Projects
             commands::projects::get_projects,
             commands::projects::add_project,

@@ -9,6 +9,7 @@ pub mod install_cancel;
 pub mod installer;
 pub mod migrations;
 pub mod my_skills_repo;
+pub mod my_skills_terminal;
 pub mod project_scanner;
 pub mod scanner;
 pub mod skill_metadata;

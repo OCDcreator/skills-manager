@@ -1,10 +1,12 @@
 use anyhow::{bail, Context, Result};
+use regex::Regex;
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use walkdir::WalkDir;
 
@@ -17,6 +19,7 @@ use super::{
 pub const WORKSPACE_PATH_SETTING_KEY: &str = "my_skills_workspace_path";
 const MY_SKILLS_REPO_SLUG: &str = "ocdcreator/my-skills";
 const MY_SKILLS_REPO_URL: &str = "https://github.com/OCDcreator/my-skills";
+static ANSI_ESCAPE_RE: OnceLock<Regex> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MySkillsWorkspaceStatus {
@@ -57,6 +60,33 @@ pub struct MySkillsWorkspaceLinkImportResult {
     pub branch: Option<String>,
     pub remote_url: Option<String>,
     pub has_changes: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkImportPreparation {
+    pub source_url: String,
+    pub workspace: PathBuf,
+    before_paths: BTreeSet<String>,
+    before_status: git_backup::GitBackupStatus,
+    before_revision: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkImportProcessOutput {
+    pub success: bool,
+    pub text: String,
+    pub exit_label: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MySkillsTerminalLaunch {
+    pub shell_program: String,
+    pub shell_args: Vec<String>,
+    pub command: String,
+    pub command_preview: String,
+    pub path: String,
+    pub source_url: String,
+    pub path_env: Option<OsString>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +215,17 @@ pub fn run_link_import(
     source_url: &str,
     output_handler: Option<LinkImportOutputHandler>,
 ) -> Result<MySkillsWorkspaceLinkImportResult> {
+    let prepared = prepare_link_import(store, source_url)?;
+    let output = execute_workspace_link_import(&prepared, output_handler)?;
+    let process_output = LinkImportProcessOutput {
+        success: output.status.success(),
+        text: combined_output_text(&output),
+        exit_label: format!("process exited with {}", output.status),
+    };
+    finalize_link_import(store, &prepared, &process_output)
+}
+
+pub fn prepare_link_import(store: &SkillStore, source_url: &str) -> Result<LinkImportPreparation> {
     let source_url = source_url.trim();
     if source_url.is_empty() {
         bail!("Source URL is required");
@@ -195,45 +236,63 @@ pub fn run_link_import(
     };
 
     ensure_workspace_root(&workspace)?;
-    let before_paths = workspace_skill_path_set(&workspace);
-    let before_status = git_backup::get_status(&workspace)?;
-    let before_revision = git_fetcher::get_head_revision(&workspace).ok();
-    let output = execute_workspace_link_import(&workspace, source_url, output_handler)?;
-    let report = parse_agent_import_output(&output);
+
+    Ok(LinkImportPreparation {
+        source_url: source_url.to_string(),
+        before_paths: workspace_skill_path_set(&workspace),
+        before_status: git_backup::get_status(&workspace)?,
+        before_revision: git_fetcher::get_head_revision(&workspace).ok(),
+        workspace,
+    })
+}
+
+pub fn finalize_link_import(
+    store: &SkillStore,
+    prepared: &LinkImportPreparation,
+    output: &LinkImportProcessOutput,
+) -> Result<MySkillsWorkspaceLinkImportResult> {
+    let report = parse_agent_import_text(&output.text, output.success, &output.exit_label);
 
     if !report.saw_result_marker {
         bail!(
             "My Skills link import failed: OpenCode finished without the required RESULT line. Output: {}",
-            summarize_output(&output)
+            summarize_text(&output.text, &output.exit_label)
         );
     }
 
-    if !output.status.success() || matches!(report.status, AgentImportStatus::Error) {
+    if !output.success || matches!(report.status, AgentImportStatus::Error) {
         bail!(
             "My Skills link import failed: {}",
-            report.detail.unwrap_or_else(|| summarize_output(&output))
+            report
+                .detail
+                .clone()
+                .unwrap_or_else(|| summarize_text(&output.text, &output.exit_label))
         );
     }
 
-    let after_paths = workspace_skill_path_set(&workspace);
-    let status = git_backup::get_status(&workspace)?;
-    let after_revision = git_fetcher::get_head_revision(&workspace).ok();
+    let after_paths = workspace_skill_path_set(&prepared.workspace);
+    let status = git_backup::get_status(&prepared.workspace)?;
+    let after_revision = git_fetcher::get_head_revision(&prepared.workspace).ok();
     validate_link_import_result(
         &report,
-        &before_status,
-        before_revision.as_deref(),
-        &before_paths,
+        &prepared.before_status,
+        prepared.before_revision.as_deref(),
+        &prepared.before_paths,
         &status,
         after_revision.as_deref(),
         &after_paths,
     )?;
 
-    let refreshed_skills = refresh_managed_skills_from_workspace(store, &workspace)?;
-    let import_summary = import_new_skills_from_workspace(store, &workspace, &before_paths)?;
+    let refreshed_skills = refresh_managed_skills_from_workspace(store, &prepared.workspace)?;
+    let import_summary = import_new_skills_from_workspace(
+        store,
+        &prepared.workspace,
+        &prepared.before_paths,
+    )?;
 
     Ok(MySkillsWorkspaceLinkImportResult {
-        path: workspace.to_string_lossy().to_string(),
-        source_url: source_url.to_string(),
+        path: prepared.workspace.to_string_lossy().to_string(),
+        source_url: prepared.source_url.clone(),
         runner: "OpenCode".to_string(),
         status: report.status.as_str().to_string(),
         detail: report.detail,
@@ -245,6 +304,25 @@ pub fn run_link_import(
         branch: status.branch,
         remote_url: status.remote_url,
         has_changes: status.has_changes,
+    })
+}
+
+pub fn build_link_import_terminal_launch(
+    prepared: &LinkImportPreparation,
+) -> Result<MySkillsTerminalLaunch> {
+    let shell_program = terminal_shell_program();
+    let shell_args = terminal_shell_args();
+    let command = build_terminal_startup_script(prepared)?;
+    let command_preview = build_terminal_command_preview(prepared);
+
+    Ok(MySkillsTerminalLaunch {
+        shell_program,
+        shell_args,
+        command,
+        command_preview,
+        path: prepared.workspace.to_string_lossy().to_string(),
+        source_url: prepared.source_url.clone(),
+        path_env: build_opencode_path_override(),
     })
 }
 
@@ -508,21 +586,13 @@ fn execute_workspace_script(workspace: &Path, action: MySkillsWorkspaceAction) -
 }
 
 fn execute_workspace_link_import(
-    workspace: &Path,
-    source_url: &str,
+    prepared: &LinkImportPreparation,
     output_handler: Option<LinkImportOutputHandler>,
 ) -> Result<Output> {
-    let prompt = build_workspace_link_import_prompt(source_url);
-    let mut command = opencode_command();
+    let invocation = build_opencode_invocation(&prepared.workspace, &prepared.source_url);
+    let mut command = opencode_command(&invocation);
     command
-        .arg("run")
-        .arg("--dir")
-        .arg(workspace)
-        .arg("--dangerously-skip-permissions")
-        .arg("--title")
-        .arg(format!("Import {} into my-skills", truncate_title(source_url)))
-        .arg(prompt)
-        .current_dir(workspace)
+        .current_dir(&prepared.workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -531,7 +601,7 @@ fn execute_workspace_link_import(
     let mut child = command.spawn().with_context(|| {
         format!(
             "Failed to start OpenCode in {}. Make sure `opencode` is installed and configured.",
-            workspace.display()
+            prepared.workspace.display()
         )
     })?;
 
@@ -546,7 +616,12 @@ fn execute_workspace_link_import(
 
     let status = child
         .wait()
-        .with_context(|| format!("Failed to finish OpenCode import in {}", workspace.display()))?;
+        .with_context(|| {
+            format!(
+                "Failed to finish OpenCode import in {}",
+                prepared.workspace.display()
+            )
+        })?;
     let stdout = join_output_reader(stdout_handle);
     let stderr = join_output_reader(stderr_handle);
 
@@ -555,6 +630,55 @@ fn execute_workspace_link_import(
         stdout,
         stderr,
     })
+}
+
+#[derive(Debug, Clone)]
+struct OpencodeInvocation {
+    program: String,
+    args: Vec<String>,
+    shell_program: String,
+    shell_command: String,
+    path_override: Option<OsString>,
+}
+
+impl OpencodeInvocation {
+    fn command_preview(&self) -> String {
+        let mut parts = Vec::with_capacity(self.args.len() + 1);
+        parts.push(shell_quote_for_display(&self.shell_program));
+        for arg in self.args.iter().take(self.args.len().saturating_sub(1)) {
+            parts.push(shell_quote_for_display(arg));
+        }
+        parts.push("<prompt>".to_string());
+        parts.join(" ")
+    }
+}
+
+fn build_opencode_invocation(workspace: &Path, source_url: &str) -> OpencodeInvocation {
+    let prompt = build_workspace_link_import_prompt(source_url);
+    let title = format!("Import {} into my-skills", truncate_title(source_url));
+    let mut args = vec![
+        "run".to_string(),
+        "--dir".to_string(),
+        workspace.to_string_lossy().to_string(),
+        "--dangerously-skip-permissions".to_string(),
+        "--title".to_string(),
+        title.clone(),
+        prompt.clone(),
+    ];
+
+    let program = resolved_opencode_program()
+        .unwrap_or_else(|| "opencode".to_string());
+    let path_override = build_opencode_path_override();
+    let shell_command = build_opencode_shell_command(workspace, &program, &args);
+    args.shrink_to_fit();
+
+    OpencodeInvocation {
+        program: program.clone(),
+        args,
+        shell_program: program,
+        shell_command,
+        path_override,
+    }
 }
 
 fn spawn_output_reader<R>(
@@ -598,35 +722,42 @@ fn join_output_reader(handle: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-fn opencode_command() -> Command {
+fn opencode_command(invocation: &OpencodeInvocation) -> Command {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
 
         let mut command = Command::new("cmd");
         command.creation_flags(0x08000000);
-        command.arg("/C");
-        if let Some(program) = find_windows_opencode_program() {
-            command.arg(program);
-        } else {
-            command.arg("opencode");
+        command.arg("/C").arg(&invocation.program);
+        for arg in &invocation.args {
+            command.arg(arg);
         }
-        inject_opencode_search_path(&mut command);
+        inject_opencode_search_path(&mut command, invocation.path_override.clone());
         command
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        let mut command = Command::new("opencode");
-        inject_opencode_search_path(&mut command);
+        let mut command = Command::new(&invocation.program);
+        for arg in &invocation.args {
+            command.arg(arg);
+        }
+        inject_opencode_search_path(&mut command, invocation.path_override.clone());
         command
     }
 }
 
-fn inject_opencode_search_path(command: &mut Command) {
+fn inject_opencode_search_path(command: &mut Command, path_override: Option<OsString>) {
+    if let Some(joined) = path_override {
+        command.env("PATH", joined);
+    }
+}
+
+fn build_opencode_path_override() -> Option<OsString> {
     let extra_paths = opencode_search_paths();
     if extra_paths.is_empty() {
-        return;
+        return None;
     }
 
     let existing = std::env::var_os("PATH").unwrap_or_default();
@@ -640,11 +771,11 @@ fn inject_opencode_search_path(command: &mut Command) {
         }
     }
 
-    if changed {
-        if let Ok(joined) = std::env::join_paths(paths) {
-            command.env("PATH", joined);
-        }
+    if !changed {
+        return None;
     }
+
+    std::env::join_paths(paths).ok()
 }
 
 fn opencode_search_paths() -> Vec<PathBuf> {
@@ -675,6 +806,18 @@ fn opencode_search_paths() -> Vec<PathBuf> {
     paths
 }
 
+fn resolved_opencode_program() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        return find_windows_opencode_program().map(|path| path.to_string_lossy().to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn find_windows_opencode_program() -> Option<PathBuf> {
     find_windows_opencode_program_in_dirs(&opencode_search_paths())
@@ -692,6 +835,44 @@ fn find_windows_opencode_program_in_dirs(paths: &[PathBuf]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn build_opencode_shell_command(workspace: &Path, program: &str, args: &[String]) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let mut pieces = Vec::with_capacity(args.len() + 2);
+        pieces.push("&".to_string());
+        pieces.push(ps_single_quote(program));
+        for arg in args.iter().take(args.len().saturating_sub(1)) {
+            pieces.push(ps_single_quote(arg));
+        }
+        pieces.push("$prompt".to_string());
+        format!(
+            "cd {}\r\n$env:NO_COLOR = '1'\r\n$prompt = @(\r\n{}\r\n) -join [Environment]::NewLine\r\n{}\r\nexit $LASTEXITCODE\r\n",
+            ps_single_quote(workspace.to_string_lossy().as_ref()),
+            ps_prompt_lines(&args[args.len().saturating_sub(1)]),
+            pieces.join(" ")
+        )
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let delimiter = unique_heredoc_delimiter(&args[args.len().saturating_sub(1)]);
+        let mut pieces = Vec::with_capacity(args.len() + 1);
+        pieces.push(sh_single_quote(program));
+        for arg in args.iter().take(args.len().saturating_sub(1)) {
+            pieces.push(sh_single_quote(arg));
+        }
+        pieces.push("\"$PROMPT\"".to_string());
+        format!(
+            "cd {}\nexport NO_COLOR=1\nPROMPT=$(cat <<'{}'\n{}\n{}\n)\n{}\nexit $?\n",
+            sh_single_quote(workspace.to_string_lossy().as_ref()),
+            delimiter,
+            args[args.len().saturating_sub(1)],
+            delimiter,
+            pieces.join(" ")
+        )
+    }
 }
 
 fn script_path_for_action(workspace: &Path, action: MySkillsWorkspaceAction) -> Option<PathBuf> {
@@ -741,22 +922,32 @@ fn script_command(script_path: &Path) -> Command {
     }
 }
 
-fn summarize_output(output: &Output) -> String {
+fn combined_output_text(output: &Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let combined = if stderr.is_empty() {
+    if stderr.is_empty() {
         stdout
     } else if stdout.is_empty() {
         stderr
     } else {
         format!("{stdout}\n{stderr}")
-    };
+    }
+}
 
-    let truncated = combined.chars().take(1200).collect::<String>();
-    if combined.chars().count() > truncated.chars().count() {
+fn summarize_output(output: &Output) -> String {
+    summarize_text(
+        &combined_output_text(output),
+        &format!("process exited with {}", output.status),
+    )
+}
+
+fn summarize_text(text: &str, empty_fallback: &str) -> String {
+    let sanitized = strip_ansi_from_text(text).trim().to_string();
+    let truncated = sanitized.chars().take(1200).collect::<String>();
+    if sanitized.chars().count() > truncated.chars().count() {
         format!("{truncated}...")
     } else if truncated.is_empty() {
-        format!("process exited with {}", output.status)
+        empty_fallback.to_string()
     } else {
         truncated
     }
@@ -847,10 +1038,21 @@ fn parse_workspace_script_output(output: &Output) -> WorkspaceScriptReport {
     WorkspaceScriptReport { status, detail }
 }
 
+#[cfg(test)]
 fn parse_agent_import_output(output: &Output) -> AgentImportReport {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut status = if output.status.success() {
+    parse_agent_import_text(
+        &combined_output_text(output),
+        output.status.success(),
+        &format!("process exited with {}", output.status),
+    )
+}
+
+fn parse_agent_import_text(
+    text: &str,
+    success: bool,
+    empty_fallback: &str,
+) -> AgentImportReport {
+    let mut status = if success {
         AgentImportStatus::Success
     } else {
         AgentImportStatus::Error
@@ -858,8 +1060,9 @@ fn parse_agent_import_output(output: &Output) -> AgentImportReport {
     let mut detail = None;
     let mut saw_result_marker = false;
 
-    for line in stdout.lines().chain(stderr.lines()) {
-        let trimmed = line.trim();
+    for line in text.lines() {
+        let sanitized = strip_ansi_from_text(line);
+        let trimmed = sanitized.trim();
         if let Some(value) = trimmed.strip_prefix("RESULT:") {
             saw_result_marker = true;
             status = classify_agent_import_status(value.trim(), status);
@@ -873,7 +1076,7 @@ fn parse_agent_import_output(output: &Output) -> AgentImportReport {
     }
 
     if detail.is_none() {
-        let summary = summarize_output(output);
+        let summary = summarize_text(text, empty_fallback);
         if !summary.is_empty() {
             detail = Some(summary);
         }
@@ -1138,6 +1341,94 @@ fn workspace_skill_path_set(workspace: &Path) -> BTreeSet<String> {
         .into_iter()
         .filter_map(|dir| path_key(workspace, &dir))
         .collect()
+}
+
+fn terminal_shell_program() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        "powershell".to_string()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("SHELL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "/bin/sh".to_string())
+    }
+}
+
+fn terminal_shell_args() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            "-NoLogo".to_string(),
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+        ]
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
+    }
+}
+
+fn build_terminal_startup_script(prepared: &LinkImportPreparation) -> Result<String> {
+    Ok(build_opencode_invocation(&prepared.workspace, &prepared.source_url).shell_command)
+}
+
+fn build_terminal_command_preview(prepared: &LinkImportPreparation) -> String {
+    build_opencode_invocation(&prepared.workspace, &prepared.source_url).command_preview()
+}
+
+fn strip_ansi_from_text(text: &str) -> String {
+    ANSI_ESCAPE_RE
+        .get_or_init(|| {
+            Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+                .expect("ANSI escape regex must compile")
+        })
+        .replace_all(text, "")
+        .into_owned()
+}
+
+fn shell_quote_for_display(value: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        ps_single_quote(value)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        sh_single_quote(value)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn ps_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn ps_prompt_lines(prompt: &str) -> String {
+    prompt
+        .lines()
+        .map(ps_single_quote)
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unique_heredoc_delimiter(prompt: &str) -> String {
+    let mut delimiter = "__OPENCODE_PROMPT__".to_string();
+    while prompt.lines().any(|line| line == delimiter) {
+        delimiter.push('_');
+    }
+    delimiter
 }
 
 fn build_workspace_link_import_prompt(source_url: &str) -> String {
