@@ -5,6 +5,19 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.13.5] - 2026-04-19
+
+### 新增
+- 本版本无新增功能
+
+### 变更
+- 优化“检查全部”更新流程：My Skills 工作区清单每次只刷新一次，不再为每个工作区来源 skill 重复扫描
+
+### 修复
+- 修复 My Skills 工作区 skill 因历史 `source_subpath` 使用反斜杠而被重复导入的问题
+
+### 移除
+- 本版本无移除项
 ## [1.13.4] - 2026-04-16
 
 ### 变更
