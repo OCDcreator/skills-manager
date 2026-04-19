@@ -702,12 +702,7 @@ pub async fn check_skill_update(
     let store = store.inner().clone();
     let proxy_url = store.proxy_url();
     tauri::async_runtime::spawn_blocking(move || {
-        check_skill_update_internal(
-            &store,
-            &skill_id,
-            force.unwrap_or(false),
-            proxy_url.as_deref(),
-        )
+        check_skill_update_internal(&store, &skill_id, force.unwrap_or(false), proxy_url.as_deref())
     })
     .await?
 }
@@ -721,18 +716,28 @@ pub async fn check_all_skill_updates(
     let proxy_url = store.proxy_url();
     tauri::async_runtime::spawn_blocking(move || {
         let force_check = force.unwrap_or(false);
-        let ids: Vec<String> = store
-            .get_all_skills()
-            .map_err(AppError::db)?
+        let skills = store.get_all_skills().map_err(AppError::db)?;
+        let has_workspace_backed_skills = skills.iter().any(|skill| {
+            matches!(skill.source_type.as_str(), "git" | "skillssh")
+                && my_skills_repo::is_my_skills_skill(skill)
+        });
+        if has_workspace_backed_skills {
+            my_skills_repo::sync_workspace_inventory_if_available(&store).map_err(AppError::io)?;
+        }
+        let ids: Vec<String> = skills
             .into_iter()
             .map(|skill| skill.id)
             .collect();
         let mut failed = Vec::new();
 
         for skill_id in ids {
-            if let Err(err) =
-                check_skill_update_internal(&store, &skill_id, force_check, proxy_url.as_deref())
-            {
+            if let Err(err) = check_skill_update_internal_with_options(
+                &store,
+                &skill_id,
+                force_check,
+                proxy_url.as_deref(),
+                !has_workspace_backed_skills,
+            ) {
                 failed.push(format!("{skill_id}: {err}"));
             }
         }
@@ -1228,6 +1233,16 @@ fn check_skill_update_internal(
     force: bool,
     proxy_url: Option<&str>,
 ) -> Result<ManagedSkillDto, AppError> {
+    check_skill_update_internal_with_options(store, skill_id, force, proxy_url, true)
+}
+
+fn check_skill_update_internal_with_options(
+    store: &SkillStore,
+    skill_id: &str,
+    force: bool,
+    proxy_url: Option<&str>,
+    import_missing_workspace: bool,
+) -> Result<ManagedSkillDto, AppError> {
     let skill = store
         .get_skill_by_id(skill_id)
         .map_err(AppError::db)?
@@ -1256,8 +1271,16 @@ fn check_skill_update_internal(
                     .map_err(AppError::db)?;
             }
 
-            if my_skills_repo::check_workspace_update_if_available(store, &skill)
-                .map_err(AppError::io)?
+            if (if import_missing_workspace {
+                my_skills_repo::check_workspace_update_if_available(store, &skill)
+            } else {
+                my_skills_repo::check_workspace_update_if_available_with_options(
+                    store,
+                    &skill,
+                    false,
+                )
+            })
+            .map_err(AppError::io)?
             {
                 return managed_skill_by_id(store, skill_id);
             }

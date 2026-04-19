@@ -335,12 +335,13 @@ pub fn resolve_workspace_source(
     let Some(subpath) = skill.source_subpath.as_deref() else {
         return Ok(None);
     };
+    let normalized_subpath = normalize_workspace_subpath(subpath);
     let Some(workspace_root) = resolve_workspace_path(store) else {
         return Ok(None);
     };
     ensure_workspace_root(&workspace_root)?;
 
-    let skill_dir = workspace_root.join(subpath);
+    let skill_dir = workspace_root.join(&normalized_subpath);
     if !skill_dir.is_dir() || !skill_metadata::is_valid_skill_dir(&skill_dir) {
         return Ok(None);
     }
@@ -390,18 +391,29 @@ pub(crate) fn check_workspace_update_if_available(
     store: &SkillStore,
     skill: &SkillRecord,
 ) -> Result<bool> {
+    check_workspace_update_if_available_with_options(store, skill, true)
+}
+
+pub(crate) fn check_workspace_update_if_available_with_options(
+    store: &SkillStore,
+    skill: &SkillRecord,
+    import_missing: bool,
+) -> Result<bool> {
     let Some(source) = resolve_workspace_source(store, skill)? else {
         return Ok(false);
     };
 
-    import_missing_workspace_skills(store, &source.workspace_root)?;
+    if import_missing {
+        import_missing_workspace_skills(store, &source.workspace_root)?;
+    }
     let local_hash = content_hash::hash_directory(&source.skill_dir)?;
     let content_changed = skill.content_hash.as_deref() != Some(local_hash.as_str());
+    let normalized_subpath = normalize_optional_workspace_subpath(skill.source_subpath.as_deref());
 
     store.update_skill_source_metadata(
         &skill.id,
         skill.source_ref_resolved.as_deref(),
-        skill.source_subpath.as_deref(),
+        normalized_subpath.as_deref(),
         skill.source_branch.as_deref(),
         Some(&source.revision),
     )?;
@@ -418,6 +430,15 @@ pub(crate) fn check_workspace_update_if_available(
     )?;
 
     Ok(true)
+}
+
+pub(crate) fn sync_workspace_inventory_if_available(store: &SkillStore) -> Result<()> {
+    let Some(workspace_root) = resolve_workspace_path(store) else {
+        return Ok(());
+    };
+    ensure_workspace_root(&workspace_root)?;
+    import_missing_workspace_skills(store, &workspace_root)?;
+    Ok(())
 }
 
 pub fn is_my_skills_collection_root(path: &Path, repo_url: Option<&str>) -> bool {
@@ -475,6 +496,16 @@ pub fn collect_workspace_skill_dirs(root: &Path) -> Vec<PathBuf> {
 pub fn path_key(root: &Path, skill_dir: &Path) -> Option<String> {
     let relative = skill_dir.strip_prefix(root).ok()?;
     Some(relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn normalize_workspace_subpath(subpath: &str) -> String {
+    subpath.replace('\\', "/").trim_matches('/').to_string()
+}
+
+fn normalize_optional_workspace_subpath(subpath: Option<&str>) -> Option<String> {
+    subpath
+        .map(normalize_workspace_subpath)
+        .filter(|value| !value.is_empty())
 }
 
 pub fn is_my_skills_repo_url(value: &str) -> bool {
@@ -1219,8 +1250,9 @@ fn refresh_managed_skills_from_workspace(store: &SkillStore, workspace: &Path) -
         let Some(subpath) = skill.source_subpath.as_deref() else {
             continue;
         };
+        let normalized_subpath = normalize_workspace_subpath(subpath);
 
-        let local_dir = workspace.join(subpath);
+        let local_dir = workspace.join(&normalized_subpath);
         if !local_dir.is_dir() || !skill_metadata::is_valid_skill_dir(&local_dir) {
             continue;
         }
@@ -1282,7 +1314,7 @@ fn import_missing_workspace_skills(
                     source_type: "git".to_string(),
                     source_ref: Some(MY_SKILLS_REPO_URL.to_string()),
                     source_ref_resolved: Some(MY_SKILLS_REPO_URL.to_string()),
-                    source_subpath: Some(subpath),
+                    source_subpath: Some(normalize_workspace_subpath(&subpath)),
                     source_branch: None,
                     source_revision: Some(revision.clone()),
                     remote_revision: Some(revision.clone()),
@@ -1317,7 +1349,7 @@ fn tracked_workspace_skill_paths(store: &SkillStore) -> Result<BTreeSet<String>>
         .get_all_skills()?
         .into_iter()
         .filter(is_my_skills_skill)
-        .filter_map(|skill| skill.source_subpath)
+        .filter_map(|skill| normalize_optional_workspace_subpath(skill.source_subpath.as_deref()))
         .collect())
 }
 
@@ -1497,6 +1529,7 @@ fn sync_skill_from_workspace(
 ) -> Result<bool> {
     let new_hash = content_hash::hash_directory(local_dir)?;
     let content_changed = skill.content_hash.as_deref() != Some(new_hash.as_str());
+    let normalized_subpath = normalize_optional_workspace_subpath(skill.source_subpath.as_deref());
 
     if content_changed {
         let staged_path = staged_path_for(&skill.central_path);
@@ -1511,7 +1544,7 @@ fn sync_skill_from_workspace(
             &skill.source_type,
             skill.source_ref.as_deref(),
             skill.source_ref_resolved.as_deref(),
-            skill.source_subpath.as_deref(),
+            normalized_subpath.as_deref(),
             skill.source_branch.as_deref(),
             Some(revision),
             Some(revision),
@@ -1525,7 +1558,7 @@ fn sync_skill_from_workspace(
     store.update_skill_source_metadata(
         &skill.id,
         skill.source_ref_resolved.as_deref(),
-        skill.source_subpath.as_deref(),
+        normalized_subpath.as_deref(),
         skill.source_branch.as_deref(),
         Some(revision),
     )?;
@@ -1739,6 +1772,24 @@ mod tests {
         let pending_paths: Vec<String> = pending.into_iter().map(|(_, subpath)| subpath).collect();
 
         assert_eq!(pending_paths, vec!["external/new-skill".to_string()]);
+    }
+
+    #[test]
+    fn collect_untracked_workspace_skill_dirs_ignores_legacy_backslash_subpaths() {
+        let workspace = tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("custom").join("x-reader")).unwrap();
+        std::fs::create_dir_all(workspace.path().join("external")).unwrap();
+        std::fs::write(workspace.path().join("update.sh"), "").unwrap();
+        std::fs::write(workspace.path().join("push.sh"), "").unwrap();
+        std::fs::write(workspace.path().join("pull.sh"), "").unwrap();
+        create_skill(&workspace.path().join("custom").join("x-reader"), "video");
+
+        let (_store_dir, store) = make_store();
+        insert_my_skills_record(&store, workspace.path(), "custom\\x-reader\\video", "video");
+
+        let pending = collect_untracked_workspace_skill_dirs(&store, workspace.path()).unwrap();
+
+        assert!(pending.is_empty());
     }
 
     #[test]
